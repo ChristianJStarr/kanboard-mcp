@@ -44,7 +44,7 @@ class Plugin extends Base
 
     public function getPluginName()
     {
-        return 'Model Context Protocol';
+        return 'ModelContextProtocol';
     }
 
     public function getPluginDescription()
