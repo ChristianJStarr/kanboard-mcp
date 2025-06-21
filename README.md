@@ -169,21 +169,6 @@ The plugin works with any MCP-compatible client following the 2024-11-05 specifi
 - **Slack/Teams Bots**: Create chatbots that manage Kanboard through MCP
 - **Custom Dashboards**: Build external tools that sync with Kanboard data
 
-## Testing & Validation
-
-The plugin includes comprehensive testing tools:
-
-```bash
-# Test basic connectivity
-curl -X POST "YOUR_MCP_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"ping","id":1}'
-
-# Test tool discovery  
-curl -X POST "YOUR_MCP_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
-```
 
 ## Contributing
 
