@@ -132,7 +132,8 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID']
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
+                        'status_id' => ['type' => 'integer', 'description' => 'Status ID (1 for active, 0 for archived)']
                     ],
                     'required' => ['project_id']
                 ]
@@ -452,8 +453,16 @@ class McpServer extends Base
                     break;
                     
                 case 'get_tasks':
-                    $tasks = $this->container['taskModel']->getAll($arguments['project_id']);
-                    $result = array_values($tasks);
+                    try {
+                        $projectId = $arguments['project_id'];
+                        $statusId = $arguments['status_id'] ?? 1; // Default to active tasks
+
+                        // Kanboard's getAllTasks requires both project_id and status_id
+                        $tasks = $this->container['taskFinderModel']->getAll($projectId, $statusId);
+                        $result = array_values($tasks);
+                    } catch (Exception $e) {
+                        return $this->errorResponse(-32603, 'Failed to get tasks: ' . $e->getMessage(), $id);
+                    }
                     break;
                     
                 case 'create_task':
@@ -789,4 +798,4 @@ class McpServer extends Base
             ]
         ];
     }
-} 
+}
