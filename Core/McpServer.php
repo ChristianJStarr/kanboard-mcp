@@ -1,9 +1,11 @@
 <?php
+declare(strict_types=1);
 
 namespace Kanboard\Plugin\ModelContextProtocol\Core;
 
 use Kanboard\Core\Base;
-use Exception;
+use Kanboard\Model\TaskModel;
+use Throwable;
 
 /**
  * MCP Server for Kanboard
@@ -20,7 +22,7 @@ class McpServer extends Base
     /**
      * Handle MCP JSON-RPC request
      */
-    public function handleRequest($request)
+    public function handleRequest(array $request): ?array
     {
         if (!isset($request['jsonrpc']) || $request['jsonrpc'] !== '2.0') {
             return $this->errorResponse(-32600, 'Invalid Request', isset($request['id']) ? $request['id'] : null);
@@ -60,15 +62,16 @@ class McpServer extends Base
                 default:
                     return $this->errorResponse(-32601, 'Method not found: ' . $method, $id);
             }
-        } catch (Exception $e) {
-            return $this->errorResponse(-32603, 'Internal error: ' . $e->getMessage(), $id);
+        } catch (Throwable $exception) {
+            $this->logThrowable('Unhandled MCP request failure', $exception);
+            return $this->errorResponse(-32603, 'Internal error', $id);
         }
     }
     
     /**
      * Initialize MCP server
      */
-    private function initialize($params, $id)
+    private function initialize(array $params, int|string|null $id): array
     {
         try {
             return [
@@ -86,15 +89,16 @@ class McpServer extends Base
                     ]
                 ]
             ];
-        } catch (Exception $e) {
-            return $this->errorResponse(-32603, 'Initialize failed: ' . $e->getMessage(), $id);
+        } catch (Throwable $exception) {
+            $this->logThrowable('Initialize failed', $exception);
+            return $this->errorResponse(-32603, 'Initialize failed', $id);
         }
     }
     
     /**
      * Handle initialized notification
      */
-    private function initialized($id)
+    private function initialized(int|string|null $id): ?array
     {
         // This is a notification, so we don't return a response
         return null;
@@ -103,7 +107,7 @@ class McpServer extends Base
     /**
      * List available tools
      */
-    private function listTools($id)
+    private function listTools(int|string|null $id): array
     {
         $tools = [
             [
@@ -132,7 +136,13 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID']
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
+                        'status_id' => [
+                            'type' => 'integer',
+                            'description' => 'Status ID (1 for active, 0 for archived)',
+                            'enum' => [TaskModel::STATUS_CLOSED, TaskModel::STATUS_OPEN],
+                            'default' => TaskModel::STATUS_OPEN
+                        ]
                     ],
                     'required' => ['project_id']
                 ]
@@ -429,7 +439,7 @@ class McpServer extends Base
     /**
      * Call a tool
      */
-    private function callTool($params, $id)
+    private function callTool(array $params, int|string|null $id): array
     {
         $toolName = $params['name'] ?? '';
         $arguments = $params['arguments'] ?? [];
@@ -452,8 +462,30 @@ class McpServer extends Base
                     break;
                     
                 case 'get_tasks':
-                    $tasks = $this->container['taskModel']->getAll($arguments['project_id']);
-                    $result = array_values($tasks);
+                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : null;
+                    $statusId = array_key_exists('status_id', $arguments)
+                        ? (int) $arguments['status_id']
+                        : TaskModel::STATUS_OPEN;
+
+                    if ($projectId === null || $projectId <= 0 || !in_array(
+                        $statusId,
+                        [TaskModel::STATUS_OPEN, TaskModel::STATUS_CLOSED],
+                        true
+                    )) {
+                        return $this->errorResponse(
+                            -32602,
+                            'Invalid params: project_id and status_id must be integers (status_id in [0,1])',
+                            $id
+                        );
+                    }
+
+                    try {
+                        $tasks = $this->container['taskFinderModel']->getAll($projectId, $statusId);
+                        $result = array_values($tasks);
+                    } catch (Throwable $exception) {
+                        $this->logThrowable('Failed to get tasks', $exception);
+                        return $this->errorResponse(-32603, 'Failed to get tasks', $id);
+                    }
                     break;
                     
                 case 'create_task':
@@ -642,17 +674,16 @@ class McpServer extends Base
                 ]
             ];
             
-        } catch (Exception $e) {
-            return $this->errorResponse(-32603, 'Tool execution failed: ' . $e->getMessage(), $id);
-        } catch (Error $e) {
-            return $this->errorResponse(-32603, 'Tool execution fatal error: ' . $e->getMessage(), $id);
+        } catch (Throwable $exception) {
+            $this->logThrowable(sprintf('Tool execution failed for %s', $toolName), $exception);
+            return $this->errorResponse(-32603, 'Tool execution failed', $id);
         }
     }
     
     /**
      * List available resources
      */
-    private function listResources($id)
+    private function listResources(int|string|null $id): array
     {
         return [
             'jsonrpc' => '2.0',
@@ -679,7 +710,7 @@ class McpServer extends Base
     /**
      * Read a resource
      */
-    private function readResource($params, $id)
+    private function readResource(array $params, int|string|null $id): array
     {
         $uri = $params['uri'] ?? '';
         
@@ -712,15 +743,16 @@ class McpServer extends Base
                     ]
                 ]
             ];
-        } catch (Exception $e) {
-            return $this->errorResponse(-32603, 'Resource read failed: ' . $e->getMessage(), $id);
+        } catch (Throwable $exception) {
+            $this->logThrowable('Resource read failed', $exception);
+            return $this->errorResponse(-32603, 'Resource read failed', $id);
         }
     }
     
     /**
      * List offerings (Cursor-specific)
      */
-    private function listOfferings($id)
+    private function listOfferings(int|string|null $id): array
     {
         return [
             'jsonrpc' => '2.0',
@@ -734,7 +766,7 @@ class McpServer extends Base
     /**
      * Handle ping
      */
-    private function ping($id)
+    private function ping(int|string|null $id): array
     {
         return [
             'jsonrpc' => '2.0',
@@ -748,7 +780,7 @@ class McpServer extends Base
     /**
      * Get tools list for internal use
      */
-    private function getToolsList()
+    private function getToolsList(): array
     {
         // For internal use if needed
         return [];
@@ -757,7 +789,7 @@ class McpServer extends Base
     /**
      * Get resources list for internal use
      */
-    private function getResourcesList()
+    private function getResourcesList(): array
     {
         return [
             [
@@ -778,7 +810,7 @@ class McpServer extends Base
     /**
      * Create error response
      */
-    private function errorResponse($code, $message, $id)
+    private function errorResponse(int $code, string $message, int|string|null $id): array
     {
         return [
             'jsonrpc' => '2.0',
@@ -789,4 +821,14 @@ class McpServer extends Base
             ]
         ];
     }
-} 
+
+    /**
+     * Log throwable details without exposing them to clients
+     */
+    private function logThrowable(string $message, Throwable $throwable): void
+    {
+        if (isset($this->container['logger'])) {
+            $this->container['logger']->error($message, ['exception' => $throwable]);
+        }
+    }
+}
