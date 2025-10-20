@@ -600,102 +600,7 @@ class McpServer extends Base
                     break;
                     
                 case 'reorder_columns':
-                    try {
-                        [$projectId, $columnIds] = $this->sanitizeColumnReorderArguments($arguments);
-                    } catch (InvalidArgumentException $exception) {
-                        $this->logThrowable('Invalid reorder_columns arguments', $exception);
-                        return $this->errorResponse(-32602, $exception->getMessage(), $id);
-                    }
-
-                    /** @var ColumnModel $columnModel */
-                    $columnModel = $this->container['columnModel'];
-
-                    $currentOrder = $this->getColumnIdsSnapshot($columnModel, $projectId);
-
-                    if ($currentOrder === []) {
-                        $this->recordReorderFailure(
-                            'Column reorder failed: unable to load existing columns',
-                            [
-                                'project_id' => $projectId,
-                                'requested_order' => $columnIds,
-                                'current_order' => $currentOrder,
-                            ]
-                        );
-
-                        return $this->errorResponse(-32603, 'Column reorder failed: internal error', $id);
-                    }
-
-                    $missingColumns = array_values(array_diff($currentOrder, $columnIds));
-                    $unknownColumns = array_values(array_diff($columnIds, $currentOrder));
-
-                    if ($missingColumns !== [] || $unknownColumns !== []) {
-                        $this->recordReorderFailure(
-                            'Column reorder rejected due to identifier mismatch',
-                            [
-                                'project_id' => $projectId,
-                                'requested_order' => $columnIds,
-                                'current_order' => $currentOrder,
-                                'missing_columns' => $missingColumns,
-                                'unknown_columns' => $unknownColumns,
-                            ]
-                        );
-
-                        $message = 'Invalid params: column_ids must match existing columns';
-                        $details = [];
-                        if ($missingColumns !== []) {
-                            $details[] = 'missing existing column ids [' . implode(', ', $missingColumns) . ']';
-                        }
-                        if ($unknownColumns !== []) {
-                            $details[] = 'unknown column ids [' . implode(', ', $unknownColumns) . ']';
-                        }
-
-                        if ($details !== []) {
-                            $message .= ' (' . implode('; ', $details) . ')';
-                        }
-
-                        return $this->errorResponse(-32602, $message, $id);
-                    }
-
-                    try {
-                        foreach ($columnIds as $positionIndex => $columnId) {
-                            $newPosition = $positionIndex + 1;
-                            $reorderResult = $columnModel->changePosition($projectId, $columnId, $newPosition);
-
-                            if ($reorderResult !== true) {
-                                $this->recordReorderFailure(
-                                    'Column reorder rejected by Kanboard core',
-                                    [
-                                        'project_id' => $projectId,
-                                        'requested_order' => $columnIds,
-                                        'current_order' => $currentOrder,
-                                        'failed_column_id' => $columnId,
-                                        'failed_position' => $newPosition,
-                                    ]
-                                );
-
-                                return $this->errorResponse(
-                                    -32603,
-                                    'Column reorder failed: Kanboard rejected the request',
-                                    $id
-                                );
-                            }
-                        }
-                    } catch (Throwable $exception) {
-                        $this->recordReorderFailure(
-                            sprintf('Column reorder threw for project %d', $projectId),
-                            [
-                                'project_id' => $projectId,
-                                'requested_order' => $columnIds,
-                                'current_order' => $currentOrder,
-                            ],
-                            $exception
-                        );
-
-                        return $this->errorResponse(-32603, 'Column reorder failed: internal error', $id);
-                    }
-
-                    $result = ['success' => true];
-                    break;
+                    return $this->handleReorderColumns($arguments, $id);
                     
                 // Administrative Tools - Category Management
                 case 'create_category':
@@ -757,18 +662,7 @@ class McpServer extends Base
                     return $this->errorResponse(-32601, 'Tool not found: ' . $toolName, $id);
             }
             
-            return [
-                'jsonrpc' => '2.0',
-                'id' => $id,
-                'result' => [
-                    'content' => [
-                        [
-                            'type' => 'text',
-                            'text' => json_encode($result, JSON_PRETTY_PRINT)
-                        ]
-                    ]
-                ]
-            ];
+            return $this->createSuccessResponse($result, $id);
             
         } catch (Throwable $exception) {
             $this->logThrowable(sprintf('Tool execution failed for %s', $toolName), $exception);
@@ -918,6 +812,133 @@ class McpServer extends Base
         ];
     }
 
+    private function createSuccessResponse(mixed $result, int|string|null $id): array
+    {
+        return [
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => [
+                'content' => [
+                    [
+                        'type' => 'text',
+                        'text' => json_encode($result, JSON_PRETTY_PRINT)
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    /**
+     * Canonical implementation of column reordering.
+     * Demonstrates a clean control flow: sanitize -> verify -> execute.
+     */
+    private function handleReorderColumns(array $arguments, int|string|null $id): array
+    {
+        // 1. Sanitize and validate arguments
+        try {
+            [$projectId, $columnIds] = $this->sanitizeColumnReorderArguments($arguments);
+        } catch (InvalidArgumentException $exception) {
+            return $this->createAndLogFailure(
+                'Invalid params for reorder_columns',
+                -32602,
+                $id,
+                $exception->getMessage(),
+                ['arguments' => $arguments]
+            );
+        }
+
+        // 2. Verify state by comparing with existing columns
+        /** @var ColumnModel $columnModel */
+        $columnModel = $this->container['columnModel'];
+        $currentIds = $this->getColumnIdsSnapshot($columnModel, $projectId);
+
+        if (($mismatchError = $this->checkColumnMismatch($columnIds, $currentIds)) !== null) {
+            return $this->createAndLogFailure(
+                'State mismatch for reorder_columns',
+                -32602,
+                $id,
+                $mismatchError,
+                ['project_id' => $projectId, 'requested' => $columnIds, 'current' => $currentIds]
+            );
+        }
+
+        // 3. Execute the reordering
+        try {
+            foreach ($columnIds as $index => $columnId) {
+                $position = $index + 1;
+                if ($columnModel->changePosition($projectId, $columnId, $position) !== true) {
+                    // This is an exceptional case if the core model rejects the change
+                    throw new \RuntimeException("Kanboard core rejected position change for column {$columnId} to {$position}.");
+                }
+            }
+        } catch (Throwable $exception) {
+            return $this->createAndLogFailure(
+                'Execution failed for reorder_columns',
+                -32603,
+                $id,
+                'Column reorder failed during execution.',
+                ['project_id' => $projectId, 'requested' => $columnIds],
+                $exception
+            );
+        }
+
+        // Success
+        return $this->createSuccessResponse(['success' => true], $id);
+    }
+
+    /**
+     * Utility to check for mismatches between requested and current column sets.
+     * Returns a formatted error string or null if there is no mismatch.
+     */
+    private function checkColumnMismatch(array $requested, array $current): ?string
+    {
+        if (count($requested) !== count($current)) {
+            return 'Invalid params: number of columns does not match.';
+        }
+
+        $missing = array_values(array_diff($current, $requested));
+        $unknown = array_values(array_diff($requested, $current));
+
+        if (empty($missing) && empty($unknown)) {
+            return null;
+        }
+
+        $details = [];
+        if (!empty($missing)) {
+            $details[] = 'missing ids [' . implode(', ', $missing) . ']';
+        }
+        if (!empty($unknown)) {
+            $details[] = 'unknown ids [' . implode(', ', $unknown) . ']';
+        }
+
+        return 'Invalid params: column sets do not match (' . implode('; ', $details) . ').';
+    }
+
+    /**
+     * Unified failure point for logging and creating an error response.
+     */
+    private function createAndLogFailure(
+        string $logMessage,
+        int $code,
+        int|string|null $id,
+        string $responseMessage,
+        array $context,
+        ?Throwable $exception = null
+    ): array {
+        $logContext = [
+            'context' => $context,
+            'mcp_channel' => 'reorder_columns_failure'
+        ];
+
+        if ($exception !== null) {
+            $logContext['exception'] = $exception;
+        }
+
+        $this->logError($logMessage, $logContext);
+
+        return $this->errorResponse($code, $responseMessage, $id);
+    }
+
     /**
      * @param array<string, mixed> $arguments
      * @return array{0:int,1:array<int,int>}
@@ -1028,56 +1049,6 @@ class McpServer extends Base
         }
 
         return null;
-    }
-
-    private function recordReorderFailure(string $message, array $context, ?Throwable $throwable = null): void
-    {
-        $logContext = $context;
-
-        if ($throwable !== null) {
-            $logContext['exception'] = [
-                'class' => get_class($throwable),
-                'message' => $throwable->getMessage(),
-                'code' => $throwable->getCode(),
-            ];
-            $this->logThrowable($message, $throwable);
-        }
-
-        $this->logError($message, $logContext);
-
-        if (!defined('DATA_DIR')) {
-            return;
-        }
-
-        $dataDir = DATA_DIR;
-        if (!is_string($dataDir) || $dataDir === '' || !is_dir($dataDir) || !is_writable($dataDir)) {
-            return;
-        }
-
-        $payload = [
-            'timestamp' => date('c'),
-            'message' => $message,
-            'context' => $logContext,
-        ];
-
-        $logLine = null;
-
-        try {
-            $logLine = json_encode(
-                $payload,
-                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-            );
-        } catch (Throwable $encodingException) {
-            $logLine = date('c') . ' ' . $message . ' ' . var_export($payload, true);
-        }
-
-        if ($logLine !== null) {
-            @file_put_contents(
-                $dataDir . DIRECTORY_SEPARATOR . 'mcp-reorder.log',
-                $logLine . PHP_EOL,
-                FILE_APPEND | LOCK_EX
-            );
-        }
     }
 
     private function logError(string $message, array $context = []): void
