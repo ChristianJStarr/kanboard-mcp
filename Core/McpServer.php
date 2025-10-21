@@ -4,8 +4,11 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Core;
 
 use Kanboard\Core\Base;
+use Kanboard\Model\ColumnModel;
 use Kanboard\Model\TaskModel;
+use InvalidArgumentException;
 use Throwable;
+use Traversable;
 
 /**
  * MCP Server for Kanboard
@@ -597,9 +600,7 @@ class McpServer extends Base
                     break;
                     
                 case 'reorder_columns':
-                    $reorderResult = $this->container['columnModel']->changePosition($arguments['project_id'], $arguments['column_ids']);
-                    $result = ['success' => $reorderResult];
-                    break;
+                    return $this->handleReorderColumns($arguments, $id);
                     
                 // Administrative Tools - Category Management
                 case 'create_category':
@@ -661,18 +662,7 @@ class McpServer extends Base
                     return $this->errorResponse(-32601, 'Tool not found: ' . $toolName, $id);
             }
             
-            return [
-                'jsonrpc' => '2.0',
-                'id' => $id,
-                'result' => [
-                    'content' => [
-                        [
-                            'type' => 'text',
-                            'text' => json_encode($result, JSON_PRETTY_PRINT)
-                        ]
-                    ]
-                ]
-            ];
+            return $this->createSuccessResponse($result, $id);
             
         } catch (Throwable $exception) {
             $this->logThrowable(sprintf('Tool execution failed for %s', $toolName), $exception);
@@ -820,6 +810,252 @@ class McpServer extends Base
                 'message' => $message
             ]
         ];
+    }
+
+    private function createSuccessResponse(mixed $result, int|string|null $id): array
+    {
+        return [
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => [
+                'content' => [
+                    [
+                        'type' => 'text',
+                        'text' => json_encode($result, JSON_PRETTY_PRINT)
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    /**
+     * Canonical implementation of column reordering.
+     * Demonstrates a clean control flow: sanitize -> verify -> execute.
+     */
+    private function handleReorderColumns(array $arguments, int|string|null $id): array
+    {
+        // 1. Sanitize and validate arguments
+        try {
+            [$projectId, $columnIds] = $this->sanitizeColumnReorderArguments($arguments);
+        } catch (InvalidArgumentException $exception) {
+            return $this->createAndLogFailure(
+                'Invalid params for reorder_columns',
+                -32602,
+                $id,
+                $exception->getMessage(),
+                ['arguments' => $arguments]
+            );
+        }
+
+        // 2. Verify state by comparing with existing columns
+        /** @var ColumnModel $columnModel */
+        $columnModel = $this->container['columnModel'];
+        $currentIds = $this->getColumnIdsSnapshot($columnModel, $projectId);
+
+        if (($mismatchError = $this->checkColumnMismatch($columnIds, $currentIds)) !== null) {
+            return $this->createAndLogFailure(
+                'State mismatch for reorder_columns',
+                -32602,
+                $id,
+                $mismatchError,
+                ['project_id' => $projectId, 'requested' => $columnIds, 'current' => $currentIds]
+            );
+        }
+
+        // 3. Execute the reordering
+        try {
+            foreach ($columnIds as $index => $columnId) {
+                $position = $index + 1;
+                if ($columnModel->changePosition($projectId, $columnId, $position) !== true) {
+                    // This is an exceptional case if the core model rejects the change
+                    throw new \RuntimeException("Kanboard core rejected position change for column {$columnId} to {$position}.");
+                }
+            }
+        } catch (Throwable $exception) {
+            return $this->createAndLogFailure(
+                'Execution failed for reorder_columns',
+                -32603,
+                $id,
+                'Column reorder failed during execution.',
+                ['project_id' => $projectId, 'requested' => $columnIds],
+                $exception
+            );
+        }
+
+        // Success
+        return $this->createSuccessResponse(['success' => true], $id);
+    }
+
+    /**
+     * Utility to check for mismatches between requested and current column sets.
+     * Returns a formatted error string or null if there is no mismatch.
+     */
+    private function checkColumnMismatch(array $requested, array $current): ?string
+    {
+        if (count($requested) !== count($current)) {
+            return 'Invalid params: number of columns does not match.';
+        }
+
+        $missing = array_values(array_diff($current, $requested));
+        $unknown = array_values(array_diff($requested, $current));
+
+        if (empty($missing) && empty($unknown)) {
+            return null;
+        }
+
+        $details = [];
+        if (!empty($missing)) {
+            $details[] = 'missing ids [' . implode(', ', $missing) . ']';
+        }
+        if (!empty($unknown)) {
+            $details[] = 'unknown ids [' . implode(', ', $unknown) . ']';
+        }
+
+        return 'Invalid params: column sets do not match (' . implode('; ', $details) . ').';
+    }
+
+    /**
+     * Unified failure point for logging and creating an error response.
+     */
+    private function createAndLogFailure(
+        string $logMessage,
+        int $code,
+        int|string|null $id,
+        string $responseMessage,
+        array $context,
+        ?Throwable $exception = null
+    ): array {
+        $logContext = [
+            'context' => $context,
+            'mcp_channel' => 'reorder_columns_failure'
+        ];
+
+        if ($exception !== null) {
+            $logContext['exception'] = $exception;
+        }
+
+        $this->logError($logMessage, $logContext);
+
+        return $this->errorResponse($code, $responseMessage, $id);
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     * @return array{0:int,1:array<int,int>}
+     */
+    private function sanitizeColumnReorderArguments(array $arguments): array
+    {
+        if (!array_key_exists('project_id', $arguments)) {
+            throw new InvalidArgumentException('Invalid params: project_id is required and must be a positive integer');
+        }
+
+        $projectId = $this->filterPositiveInteger($arguments['project_id']);
+
+        if ($projectId === null) {
+            throw new InvalidArgumentException('Invalid params: project_id must be a positive integer');
+        }
+
+        if (!array_key_exists('column_ids', $arguments)) {
+            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
+        }
+
+        $columnIdArgument = $arguments['column_ids'];
+
+        if (is_string($columnIdArgument)) {
+            $columnIdArgument = array_values(array_filter(
+                array_map('trim', explode(',', $columnIdArgument)),
+                static fn(string $value): bool => $value !== ''
+            ));
+        } elseif ($columnIdArgument instanceof Traversable) {
+            $columnIdArgument = iterator_to_array($columnIdArgument, false);
+        }
+
+        if (!is_array($columnIdArgument) || $columnIdArgument === []) {
+            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
+        }
+
+        $columnIds = [];
+
+        foreach (array_values($columnIdArgument) as $index => $rawColumnId) {
+            $columnId = $this->filterPositiveInteger($rawColumnId);
+
+            if ($columnId === null) {
+                throw new InvalidArgumentException(sprintf(
+                    'Invalid params: column_ids[%d] must be a positive integer',
+                    $index
+                ));
+            }
+
+            $columnIds[] = $columnId;
+        }
+
+        if (count($columnIds) !== count(array_unique($columnIds))) {
+            throw new InvalidArgumentException('Invalid params: column_ids must contain unique identifiers');
+        }
+
+        return [$projectId, $columnIds];
+    }
+
+    /**
+     * @param ColumnModel|object $columnModel
+     * @return array<int,int>
+     */
+    private function getColumnIdsSnapshot($columnModel, int $projectId): array
+    {
+        if (!is_object($columnModel) || !method_exists($columnModel, 'getAll')) {
+            return [];
+        }
+
+        try {
+            $columns = $columnModel->getAll($projectId);
+        } catch (Throwable $exception) {
+            $this->logThrowable(
+                sprintf('Failed to fetch column snapshot for project %d', $projectId),
+                $exception
+            );
+
+            return [];
+        }
+
+        if (!is_array($columns)) {
+            return [];
+        }
+
+        $filtered = array_filter(
+            $columns,
+            static fn($column): bool => is_array($column) && isset($column['id']) && (int) $column['id'] > 0
+        );
+
+        return array_values(array_map(
+            static fn(array $column): int => (int) $column['id'],
+            $filtered
+        ));
+    }
+
+    private function filterPositiveInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value)) {
+            $filtered = filter_var(trim($value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+            if ($filtered !== false) {
+                return (int) $filtered;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
+    private function logError(string $message, array $context = []): void
+    {
+        if (isset($this->container['logger'])) {
+            $this->container['logger']->error($message, $context);
+        }
     }
 
     /**
