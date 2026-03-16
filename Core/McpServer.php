@@ -195,10 +195,11 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
                         'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
                         'column_id' => ['type' => 'integer', 'description' => 'Target column ID']
                     ],
-                    'required' => ['task_id', 'column_id']
+                    'required' => ['project_id', 'task_id', 'column_id']
                 ]
             ],
             [
@@ -302,7 +303,8 @@ class McpServer extends Base
                         'column_id' => ['type' => 'integer', 'description' => 'Column ID'],
                         'title' => ['type' => 'string', 'description' => 'Column title'],
                         'task_limit' => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
-                        'description' => ['type' => 'string', 'description' => 'Column description']
+                        'description' => ['type' => 'string', 'description' => 'Column description'],
+                        'hide_in_dashboard' => ['type' => 'integer', 'description' => '1 to hide from dashboard, 0 to show']
                     ],
                     'required' => ['column_id']
                 ]
@@ -412,9 +414,10 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
                         'swimlane_id' => ['type' => 'integer', 'description' => 'Swimlane ID']
                     ],
-                    'required' => ['swimlane_id']
+                    'required' => ['project_id', 'swimlane_id']
                 ]
             ],
             [
@@ -520,10 +523,22 @@ class McpServer extends Base
                     break;
                     
                 case 'move_task':
+                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
+                    $taskId = isset($arguments['task_id']) ? (int) $arguments['task_id'] : 0;
+                    $columnId = isset($arguments['column_id']) ? (int) $arguments['column_id'] : 0;
+
+                    if ($projectId <= 0 || $taskId <= 0 || $columnId <= 0) {
+                        return $this->errorResponse(
+                            -32602,
+                            'Invalid params: project_id, task_id, and column_id must be positive integers',
+                            $id
+                        );
+                    }
+
                     $moveResult = $this->container['taskPositionModel']->movePosition(
-                        $arguments['project_id'] ?? null,
-                        $arguments['task_id'],
-                        $arguments['column_id'],
+                        $projectId,
+                        $taskId,
+                        $columnId,
                         1
                     );
                     $result = ['success' => $moveResult];
@@ -594,7 +609,10 @@ class McpServer extends Base
                     $title = $arguments['title'] ?? $column['title'];
                     $taskLimit = isset($arguments['task_limit']) ? (int) $arguments['task_limit'] : (int) $column['task_limit'];
                     $description = $arguments['description'] ?? $column['description'];
-                    $updateResult = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description);
+                    $hideInDashboard = isset($arguments['hide_in_dashboard'])
+                        ? (int) $arguments['hide_in_dashboard']
+                        : (int) ($column['hide_in_dashboard'] ?? 0);
+                    $updateResult = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description, $hideInDashboard);
                     $result = ['success' => $updateResult];
                     break;
                     
@@ -608,11 +626,11 @@ class McpServer extends Base
                     
                 // Administrative Tools - Category Management
                 case 'create_category':
-                    $categoryId = $this->container['categoryModel']->create(
-                        $arguments['project_id'],
-                        $arguments['name'],
-                        $arguments['description'] ?? ''
-                    );
+                    $categoryId = $this->container['categoryModel']->create([
+                        'project_id' => $arguments['project_id'],
+                        'name' => $arguments['name'],
+                        'description' => $arguments['description'] ?? ''
+                    ]);
                     $result = ['category_id' => $categoryId];
                     break;
                     
@@ -653,7 +671,18 @@ class McpServer extends Base
                     break;
                     
                 case 'delete_swimlane':
-                    $deleteResult = $this->container['swimlaneModel']->remove($arguments['swimlane_id']);
+                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
+                    $swimlaneId = isset($arguments['swimlane_id']) ? (int) $arguments['swimlane_id'] : 0;
+
+                    if ($projectId <= 0 || $swimlaneId <= 0) {
+                        return $this->errorResponse(
+                            -32602,
+                            'Invalid params: project_id and swimlane_id must be positive integers',
+                            $id
+                        );
+                    }
+
+                    $deleteResult = $this->container['swimlaneModel']->remove($projectId, $swimlaneId);
                     $result = ['success' => $deleteResult];
                     break;
                     
