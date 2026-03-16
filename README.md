@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Kanboard](https://img.shields.io/badge/kanboard-1.2.0+-green.svg)](https://kanboard.org/)
-[![MCP](https://img.shields.io/badge/MCP-2025--18--06-orange.svg)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-2025--11--25-orange.svg)](https://modelcontextprotocol.io/)
 
 **The most comprehensive Kanboard.org integration for AI assistants and automation tools.**
 
@@ -16,7 +16,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 - **Full CRUD Operations**: Create, read, update, and delete across all Kanboard entities
 - **Workflow Management**: Complete control over columns, swimlanes, and categories
 - **Real-time Operations**: Instant project updates through natural language
-- **JSON-RPC 2.0 Compliant**: Fully compliant with MCP specification v2025-18-06
+- **JSON-RPC 2.0 Compliant**: Fully compliant with MCP specification v2025-11-25
 
 ## Complete Tool Suite (26 Tools)
 
@@ -122,7 +122,7 @@ https://your-kanboard.com/?controller=ModelContextProtocolController&action=hand
 3. Manage projects while chatting with Claude!
 
 ### Custom MCP Clients
-The plugin works with any MCP-compatible client following the 2024-11-05 specification.
+The plugin works with MCP-compatible clients and negotiates protocol versions up to 2025-11-25.
 
 ## Security Features
 
@@ -141,7 +141,7 @@ The plugin works with any MCP-compatible client following the 2024-11-05 specifi
 - **Memory**: 128MB+ recommended for large projects
 
 ### Protocol Compliance
-- **MCP Version**: 2024-11-05
+- **MCP Version**: 2025-11-25 (with backward negotiation support)
 - **Transport**: HTTP with JSON-RPC 2.0
 - **Capabilities**: Tools, Resources, Experimental features
 - **Error Handling**: Comprehensive error responses with debugging info
