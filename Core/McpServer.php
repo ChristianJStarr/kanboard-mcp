@@ -586,11 +586,15 @@ class McpServer extends Base
                     break;
                     
                 case 'update_column':
-                    $updateData = [];
-                    if (isset($arguments['title'])) $updateData['title'] = $arguments['title'];
-                    if (isset($arguments['task_limit'])) $updateData['task_limit'] = $arguments['task_limit'];
-                    if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
-                    $updateResult = $this->container['columnModel']->update($arguments['column_id'], $updateData);
+                    $columnId = (int) $arguments['column_id'];
+                    $column = $this->container['columnModel']->getById($columnId);
+                    if (empty($column)) {
+                        return $this->errorResponse(-32602, 'Column not found', $id);
+                    }
+                    $title = $arguments['title'] ?? $column['title'];
+                    $taskLimit = isset($arguments['task_limit']) ? (int) $arguments['task_limit'] : (int) $column['task_limit'];
+                    $description = $arguments['description'] ?? $column['description'];
+                    $updateResult = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description);
                     $result = ['success' => $updateResult];
                     break;
                     
