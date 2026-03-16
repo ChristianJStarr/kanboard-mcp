@@ -662,7 +662,7 @@ class McpServer extends Base
                     $commentId = $this->container['commentModel']->create([
                         'task_id' => $arguments['task_id'],
                         'comment' => $arguments['comment'],
-                        'user_id' => $this->container['userSession']->getId()
+                        'user_id' => isset($arguments['user_id']) ? (int) $arguments['user_id'] : 0
                     ]);
                     $result = ['comment_id' => $commentId];
                     break;
