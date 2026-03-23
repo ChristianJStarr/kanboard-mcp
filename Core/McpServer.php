@@ -604,11 +604,11 @@ class McpServer extends Base
                     
                 // Administrative Tools - Category Management
                 case 'create_category':
-                    $categoryId = $this->container['categoryModel']->create(
-                        $arguments['project_id'],
-                        $arguments['name'],
-                        $arguments['description'] ?? ''
-                    );
+                    $categoryId = $this->container['categoryModel']->create([
+                        'project_id' => $arguments['project_id'],
+                        'name' => $arguments['name'],
+                        'description' => $arguments['description'] ?? ''
+                    ]);
                     $result = ['category_id' => $categoryId];
                     break;
                     
