@@ -1,9 +1,11 @@
 <?php
+declare(strict_types=1);
 
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Core\Base;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
+use Throwable;
 
 /**
  * Model Context Protocol Controller
@@ -14,13 +16,23 @@ use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 class ModelContextProtocolController extends Base
 {
     /**
+     * @var array<int,string>
+     */
+    private const SUPPORTED_PROTOCOL_VERSIONS = [
+        '2025-11-25',
+        '2025-06-18',
+        '2025-03-26',
+        '2024-11-05',
+    ];
+
+    /**
      * Handle MCP requests for different transport types
      */
     public function handle()
     {
         // Add CORS headers immediately for all requests
         header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD');
+        header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
         header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, X-Requested-With, Origin, User-Agent, Cache-Control, Pragma');
         header('Access-Control-Expose-Headers: Content-Type, Cache-Control, Expires, Pragma');
         header('Access-Control-Max-Age: 86400');
@@ -30,6 +42,11 @@ class ModelContextProtocolController extends Base
             http_response_code(200);
             exit;
         }
+
+        if (!$this->isValidOrigin()) {
+            $this->sendError(403, 'Forbidden: invalid origin');
+            return;
+        }
         
         // Validate token first
         if (!$this->validateToken()) {
@@ -37,25 +54,27 @@ class ModelContextProtocolController extends Base
             return;
         }
         
-        // Determine transport type based on Accept header and User-Agent
+        $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+        if ($requestMethod === 'POST') {
+            $this->handleStreamableHttp();
+            return;
+        }
+
         $acceptHeader = $_SERVER['HTTP_ACCEPT'] ?? '';
-        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        
-        // Check if this is an SSE request - only if SSE is preferred over JSON
-        if (strpos($acceptHeader, 'text/event-stream') !== false && 
-            strpos($acceptHeader, 'application/json') === false) {
+
+        if ($requestMethod === 'GET' && strpos($acceptHeader, 'text/event-stream') !== false) {
             $this->handleSSE();
             return;
         }
-        
-        // Default to Streamable HTTP for JSON or mixed accept headers
-        $this->handleStreamableHttp();
+
+        $this->sendError(405, 'Method Not Allowed');
     }
     
     /**
      * Validate the MCP token
      */
-    private function validateToken()
+    private function validateToken(): bool
     {
         $token = $_GET['token'] ?? '';
         
@@ -73,113 +92,104 @@ class ModelContextProtocolController extends Base
     /**
      * Handle Streamable HTTP transport
      */
-    private function handleStreamableHttp()
+    private function handleStreamableHttp(): void
     {
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            $this->sendError(405, 'Method Not Allowed');
+            return;
+        }
+
         // Set proper headers for Streamable HTTP
-        header('Content-Type: application/json');
         header('Cache-Control: no-cache, no-store, must-revalidate');
         header('Pragma: no-cache');
         header('Expires: 0');
-        
-        // Handle GET requests - just return server status, don't send MCP capabilities
-        if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-            echo json_encode([
-                'status' => 'MCP Server Ready',
-                'transport' => 'streamable-http',
-                'protocol' => 'Model Context Protocol',
-                'version' => '2024-11-05'
-            ]);
+
+        $protocolHeader = $_SERVER['HTTP_MCP_PROTOCOL_VERSION'] ?? '';
+        if ($protocolHeader !== '' && !in_array($protocolHeader, self::SUPPORTED_PROTOCOL_VERSIONS, true)) {
+            $this->sendError(400, 'Unsupported MCP protocol version');
+            return;
+        }
+
+        $input = file_get_contents('php://input');
+
+        $request = json_decode($input, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->sendJsonRpcError(-32700, 'Parse error', null, 400);
+            return;
+        }
+
+        if (!is_array($request)) {
+            $this->sendJsonRpcError(-32600, 'Invalid Request', null, 400);
+            return;
+        }
+
+        if ($this->isListArray($request)) {
+            $this->sendJsonRpcError(-32600, 'Batch requests are not supported', null, 400);
+            return;
+        }
+
+        // Accept client notifications/responses with 202, as required by Streamable HTTP.
+        if (!array_key_exists('method', $request) && (array_key_exists('result', $request) || array_key_exists('error', $request))) {
+            http_response_code(202);
             exit;
         }
-        
-        // Handle POST requests - JSON-RPC
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $input = file_get_contents('php://input');
-            
-            $request = json_decode($input, true);
-            
-            if (!$request) {
-                $this->sendJsonRpcError(-32700, 'Parse error', null);
-                return;
-            }
-            
-            try {
-                // Initialize MCP server and handle request
-                $mcpServer = new McpServer($this->container);
-                
-                $response = $mcpServer->handleRequest($request);
-                
-                // Handle notifications (null responses)
-                if ($response === null) {
-                    http_response_code(204); // No Content
-                    exit;
-                }
-                
-                echo json_encode($response);
-                exit;
-                
-            } catch (Exception $e) {
-                // Send proper error response
-                http_response_code(500);
-                echo json_encode([
-                    'jsonrpc' => '2.0',
-                    'id' => $request['id'] ?? null,
-                    'error' => [
-                        'code' => -32603,
-                        'message' => 'Internal error: ' . $e->getMessage()
-                    ]
-                ]);
-                exit;
-            } catch (Error $e) {
-                // Send proper error response
-                http_response_code(500);
-                echo json_encode([
-                    'jsonrpc' => '2.0',
-                    'id' => $request['id'] ?? null,
-                    'error' => [
-                        'code' => -32603,
-                        'message' => 'Fatal error: ' . $e->getMessage()
-                    ]
-                ]);
+
+        $isNotification = !array_key_exists('id', $request);
+
+        try {
+            $mcpServer = new McpServer($this->container);
+            $response = $mcpServer->handleRequest($request);
+
+            if ($isNotification || $response === null) {
+                http_response_code(202);
                 exit;
             }
+
+            header('Content-Type: application/json');
+            echo json_encode($response);
+            exit;
+        } catch (Throwable $exception) {
+            http_response_code(500);
+            $this->sendJsonRpcError(-32603, 'Internal error', isset($request['id']) ? $request['id'] : null, 500);
+            return;
         }
-        
-        $this->sendError(405, 'Method Not Allowed');
     }
     
     /**
      * Handle SSE requests from Cursor IDE
      */
-    private function handleSSE()
+    private function handleSSE(): void
     {
         // Set SSE headers
         header('Content-Type: text/event-stream');
+        header('X-Accel-Buffering: no');
         header('Cache-Control: no-cache');
         header('Connection: keep-alive');
         header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, Last-Event-ID, X-Requested-With');
-        
+        @ini_set('output_buffering', 'off');
+        @ini_set('zlib.output_compression', '0');
+
         // Disable buffering
-        if (ob_get_level()) {
+        while (ob_get_level()) {
             ob_end_clean();
         }
+        ob_implicit_flush(true);
         
-        // Send initial connection acknowledgment
-        echo "event: connect\n";
-        echo "data: {\"type\": \"connect\", \"message\": \"MCP Server connected\"}\n\n";
+        // Prime reconnect semantics with an event id and empty data payload.
+        $eventId = bin2hex(random_bytes(8));
+        echo "id: {$eventId}\n";
+        echo "data:\n\n";
         flush();
-        
-        // Keep connection alive
+
+        // Keep connection alive with lightweight comment heartbeats.
         $counter = 0;
         while (true) {
-            // Send heartbeat every 30 seconds
             if ($counter % 30 === 0) {
-                echo "event: heartbeat\n";
-                echo "data: {\"type\": \"heartbeat\", \"timestamp\": " . time() . "}\n\n";
+                echo ': heartbeat ' . time() . "\n\n";
                 flush();
             }
-            
+
             // Check if client disconnected
             if (connection_aborted()) {
                 break;
@@ -193,8 +203,11 @@ class ModelContextProtocolController extends Base
     /**
      * Send JSON-RPC error response
      */
-    private function sendJsonRpcError($code, $message, $id)
+    private function sendJsonRpcError(int $code, string $message, int|string|null $id, int $httpStatus = 200): void
     {
+        http_response_code($httpStatus);
+        header('Content-Type: application/json');
+
         $response = [
             'jsonrpc' => '2.0',
             'id' => $id,
@@ -211,11 +224,74 @@ class ModelContextProtocolController extends Base
     /**
      * Send HTTP error response
      */
-    private function sendError($code, $message)
+    private function sendError(int $code, string $message): void
     {
         http_response_code($code);
+        header('Content-Type: application/json');
         echo json_encode(['error' => $message]);
         exit;
+    }
+
+    /**
+     * @param array<mixed> $value
+     */
+    private function isListArray(array $value): bool
+    {
+        $expected = 0;
+        foreach (array_keys($value) as $key) {
+            if ($key !== $expected) {
+                return false;
+            }
+
+            $expected++;
+        }
+
+        return true;
+    }
+
+    private function isValidOrigin(): bool
+    {
+        $originHeader = $_SERVER['HTTP_ORIGIN'] ?? '';
+        if ($originHeader === '') {
+            return true;
+        }
+
+        $origin = parse_url($originHeader);
+        if ($origin === false || !isset($origin['scheme'], $origin['host'])) {
+            return false;
+        }
+
+        $originScheme = strtolower($origin['scheme']);
+        if ($originScheme !== 'http' && $originScheme !== 'https') {
+            return false;
+        }
+
+        $originHost = strtolower($origin['host']);
+        $originPort = isset($origin['port'])
+            ? (int) $origin['port']
+            : ($originScheme === 'https' ? 443 : 80);
+
+        $hostHeader = $_SERVER['HTTP_HOST'] ?? '';
+        if ($hostHeader === '') {
+            return false;
+        }
+
+        $hostParts = explode(':', $hostHeader, 2);
+        $requestHost = strtolower($hostParts[0]);
+        $requestPort = isset($hostParts[1]) && ctype_digit($hostParts[1])
+            ? (int) $hostParts[1]
+            : ($this->isHttpsRequest() ? 443 : 80);
+
+        return $originHost === $requestHost && $originPort === $requestPort;
+    }
+
+    private function isHttpsRequest(): bool
+    {
+        if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+            return strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https';
+        }
+
+        return isset($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off' && $_SERVER['HTTPS'] !== '';
     }
     
     /**

@@ -17,6 +17,20 @@ use Traversable;
  */
 class McpServer extends Base
 {
+    private const LATEST_PROTOCOL_VERSION = '2025-11-25';
+
+    /**
+     * Maintained for compatibility with clients that still negotiate older revisions.
+     *
+     * @var array<int,string>
+     */
+    private const SUPPORTED_PROTOCOL_VERSIONS = [
+        '2025-11-25',
+        '2025-06-18',
+        '2025-03-26',
+        '2024-11-05',
+    ];
+
     public function __construct($container)
     {
         $this->container = $container;
@@ -31,7 +45,11 @@ class McpServer extends Base
             return $this->errorResponse(-32600, 'Invalid Request', isset($request['id']) ? $request['id'] : null);
         }
         
-        $method = $request['method'] ?? '';
+        if (isset($request['params']) && !is_array($request['params'])) {
+            return $this->errorResponse(-32602, 'Invalid params', isset($request['id']) ? $request['id'] : null);
+        }
+
+        $method = isset($request['method']) && is_string($request['method']) ? $request['method'] : '';
         $params = $request['params'] ?? [];
         $id = $request['id'] ?? null;
         
@@ -40,18 +58,22 @@ class McpServer extends Base
                 case 'initialize':
                     return $this->initialize($params, $id);
                     
+                case 'notifications/initialized':
                 case 'initialized':
-                    return $this->initialized($id);
-                    
+                    return $this->initialized();
+
                 case 'tools/list':
-                    return $this->listTools($id);
-                    
+                    return $this->listTools($params, $id);
+
                 case 'tools/call':
                     return $this->callTool($params, $id);
-                    
+
                 case 'resources/list':
-                    return $this->listResources($id);
-                    
+                    return $this->listResources($params, $id);
+
+                case 'resources/templates/list':
+                    return $this->listResourceTemplates($params, $id);
+
                 case 'resources/read':
                     return $this->readResource($params, $id);
                 
@@ -77,19 +99,34 @@ class McpServer extends Base
     private function initialize(array $params, int|string|null $id): array
     {
         try {
+            $requestedVersion = isset($params['protocolVersion']) && is_string($params['protocolVersion'])
+                ? $params['protocolVersion']
+                : null;
+
+            $negotiatedVersion = in_array($requestedVersion, self::SUPPORTED_PROTOCOL_VERSIONS, true)
+                ? $requestedVersion
+                : self::LATEST_PROTOCOL_VERSION;
+
             return [
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'result' => [
-                    'protocolVersion' => '2024-11-05',
+                    'protocolVersion' => $negotiatedVersion,
                     'capabilities' => [
-                        'tools' => (object)[],
-                        'resources' => (object)[]
+                        'tools' => [
+                            'listChanged' => false,
+                        ],
+                        'resources' => [
+                            'listChanged' => false,
+                        ],
                     ],
                     'serverInfo' => [
-                        'name' => 'Kanboard MCP Server',
-                        'version' => '1.0.0'
-                    ]
+                        'name' => 'kanboard-mcp',
+                        'title' => 'Kanboard MCP Server',
+                        'version' => '1.0.0',
+                        'description' => 'Kanboard project-management tools and resources via MCP.',
+                    ],
+                    'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes.',
                 ]
             ];
         } catch (Throwable $exception) {
@@ -101,7 +138,7 @@ class McpServer extends Base
     /**
      * Handle initialized notification
      */
-    private function initialized(int|string|null $id): ?array
+    private function initialized(): ?array
     {
         // This is a notification, so we don't return a response
         return null;
@@ -110,15 +147,20 @@ class McpServer extends Base
     /**
      * List available tools
      */
-    private function listTools(int|string|null $id): array
+    private function listTools(array $params, int|string|null $id): array
     {
+        $cursor = $params['cursor'] ?? null;
+        if ($cursor !== null && !is_string($cursor)) {
+            return $this->errorResponse(-32602, 'Invalid params: cursor must be a string', $id);
+        }
+
         $tools = [
             [
                 'name' => 'get_projects',
                 'description' => 'Get all projects',
                 'inputSchema' => [
                     'type' => 'object',
-                    'properties' => (object)[]
+                    'additionalProperties' => false,
                 ]
             ],
             [
@@ -195,10 +237,11 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
                         'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
                         'column_id' => ['type' => 'integer', 'description' => 'Target column ID']
                     ],
-                    'required' => ['task_id', 'column_id']
+                    'required' => ['project_id', 'task_id', 'column_id']
                 ]
             ],
             [
@@ -264,7 +307,7 @@ class McpServer extends Base
                 'description' => 'Get all users in the system',
                 'inputSchema' => [
                     'type' => 'object',
-                    'properties' => (object)[]
+                    'additionalProperties' => false,
                 ]
             ],
             [
@@ -302,7 +345,8 @@ class McpServer extends Base
                         'column_id' => ['type' => 'integer', 'description' => 'Column ID'],
                         'title' => ['type' => 'string', 'description' => 'Column title'],
                         'task_limit' => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
-                        'description' => ['type' => 'string', 'description' => 'Column description']
+                        'description' => ['type' => 'string', 'description' => 'Column description'],
+                        'hide_in_dashboard' => ['type' => 'integer', 'description' => '1 to hide from dashboard, 0 to show']
                     ],
                     'required' => ['column_id']
                 ]
@@ -412,9 +456,10 @@ class McpServer extends Base
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
                         'swimlane_id' => ['type' => 'integer', 'description' => 'Swimlane ID']
                     ],
-                    'required' => ['swimlane_id']
+                    'required' => ['project_id', 'swimlane_id']
                 ]
             ],
             [
@@ -444,9 +489,17 @@ class McpServer extends Base
      */
     private function callTool(array $params, int|string|null $id): array
     {
+        if (!isset($params['name']) || !is_string($params['name']) || trim($params['name']) === '') {
+            return $this->errorResponse(-32602, 'Invalid params: name is required and must be a non-empty string', $id);
+        }
+
+        if (array_key_exists('arguments', $params) && !is_array($params['arguments'])) {
+            return $this->errorResponse(-32602, 'Invalid params: arguments must be an object', $id);
+        }
+
         $toolName = $params['name'] ?? '';
         $arguments = $params['arguments'] ?? [];
-        
+
         try {
             $result = null;
             
@@ -457,8 +510,12 @@ class McpServer extends Base
                     break;
                     
                 case 'create_project':
+                    if (!isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
+                    }
+
                     $projectId = $this->container['projectModel']->create([
-                        'name' => $arguments['name'],
+                        'name' => trim($arguments['name']),
                         'description' => $arguments['description'] ?? ''
                     ]);
                     $result = ['project_id' => $projectId];
@@ -475,9 +532,8 @@ class McpServer extends Base
                         [TaskModel::STATUS_OPEN, TaskModel::STATUS_CLOSED],
                         true
                     )) {
-                        return $this->errorResponse(
-                            -32602,
-                            'Invalid params: project_id and status_id must be integers (status_id in [0,1])',
+                        return $this->createToolExecutionErrorResponse(
+                            'Invalid arguments: project_id and status_id must be integers (status_id in [0,1])',
                             $id
                         );
                     }
@@ -487,24 +543,36 @@ class McpServer extends Base
                         $result = array_values($tasks);
                     } catch (Throwable $exception) {
                         $this->logThrowable('Failed to get tasks', $exception);
-                        return $this->errorResponse(-32603, 'Failed to get tasks', $id);
+                        return $this->createToolExecutionErrorResponse('Failed to get tasks', $id);
                     }
                     break;
-                    
+
                 case 'create_task':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                    }
+
+                    if (!isset($arguments['title']) || !is_string($arguments['title']) || trim($arguments['title']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
+                    }
+
                     $taskData = [
-                        'project_id' => $arguments['project_id'],
-                        'title' => $arguments['title'],
+                        'project_id' => (int) $arguments['project_id'],
+                        'title' => trim($arguments['title']),
                         'description' => $arguments['description'] ?? ''
                     ];
                     if (isset($arguments['column_id'])) {
-                        $taskData['column_id'] = $arguments['column_id'];
+                        $taskData['column_id'] = (int) $arguments['column_id'];
                     }
                     $taskId = $this->container['taskCreationModel']->create($taskData);
                     $result = ['task_id' => $taskId];
                     break;
-                    
+
                 case 'update_task':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                    }
+
                     $taskData = ['id' => $arguments['task_id']];
                     if (isset($arguments['title'])) $taskData['title'] = $arguments['title'];
                     if (isset($arguments['description'])) $taskData['description'] = $arguments['description'];
@@ -515,31 +583,58 @@ class McpServer extends Base
                     break;
                     
                 case 'get_columns':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                    }
+
                     $columns = $this->container['columnModel']->getAll($arguments['project_id']);
                     $result = array_values($columns);
                     break;
                     
                 case 'move_task':
+                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
+                    $taskId = isset($arguments['task_id']) ? (int) $arguments['task_id'] : 0;
+                    $columnId = isset($arguments['column_id']) ? (int) $arguments['column_id'] : 0;
+
+                    if ($projectId <= 0 || $taskId <= 0 || $columnId <= 0) {
+                        return $this->createToolExecutionErrorResponse(
+                            'Invalid arguments: project_id, task_id, and column_id must be positive integers',
+                            $id
+                        );
+                    }
+
                     $moveResult = $this->container['taskPositionModel']->movePosition(
-                        $arguments['project_id'] ?? null,
-                        $arguments['task_id'],
-                        $arguments['column_id'],
+                        $projectId,
+                        $taskId,
+                        $columnId,
                         1
                     );
                     $result = ['success' => $moveResult];
                     break;
                     
                 case 'get_task_details':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                    }
+                    
                     $task = $this->container['taskFinderModel']->getById($arguments['task_id']);
                     $result = $task;
                     break;
-                    
+
                 case 'delete_task':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                    }
+
                     $deleteResult = $this->container['taskModel']->remove($arguments['task_id']);
                     $result = ['success' => $deleteResult];
                     break;
-                    
+
                 case 'assign_task':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['user_id']) || (int) $arguments['user_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id and user_id must be positive integers', $id);
+                    }
+
                     $assignResult = $this->container['taskModificationModel']->update([
                         'id' => $arguments['task_id'],
                         'owner_id' => $arguments['user_id']
@@ -548,6 +643,10 @@ class McpServer extends Base
                     break;
                     
                 case 'set_task_due_date':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['due_date']) || !is_string($arguments['due_date']) || trim($arguments['due_date']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and due_date must be a non-empty string', $id);
+                    }
+
                     $dueDateResult = $this->container['taskModificationModel']->update([
                         'id' => $arguments['task_id'],
                         'date_due' => $arguments['due_date']
@@ -556,10 +655,14 @@ class McpServer extends Base
                     break;
                     
                 case 'add_task_comment':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['comment']) || !is_string($arguments['comment']) || trim($arguments['comment']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and comment must be a non-empty string', $id);
+                    }
+
                     $commentId = $this->container['commentModel']->create([
                         'task_id' => $arguments['task_id'],
                         'comment' => $arguments['comment'],
-                        'user_id' => $this->container['userSession']->getId()
+                        'user_id' => isset($arguments['user_id']) ? (int) $arguments['user_id'] : 0
                     ]);
                     $result = ['comment_id' => $commentId];
                     break;
@@ -570,15 +673,23 @@ class McpServer extends Base
                     break;
                     
                 case 'get_task_comments':
+                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                    }
+
                     $comments = $this->container['commentModel']->getAll($arguments['task_id']);
                     $result = array_values($comments);
                     break;
                     
                 // Administrative Tools - Column Management
                 case 'create_column':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['title']) || !is_string($arguments['title']) || trim($arguments['title']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and title must be a non-empty string', $id);
+                    }
+
                     $columnId = $this->container['columnModel']->create(
                         $arguments['project_id'],
-                        $arguments['title'],
+                        trim($arguments['title']),
                         $arguments['task_limit'] ?? 0,
                         $arguments['description'] ?? ''
                     );
@@ -586,15 +697,30 @@ class McpServer extends Base
                     break;
                     
                 case 'update_column':
-                    $updateData = [];
-                    if (isset($arguments['title'])) $updateData['title'] = $arguments['title'];
-                    if (isset($arguments['task_limit'])) $updateData['task_limit'] = $arguments['task_limit'];
-                    if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
-                    $updateResult = $this->container['columnModel']->update($arguments['column_id'], $updateData);
+                    if (!isset($arguments['column_id']) || (int) $arguments['column_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
+                    }
+
+                    $columnId = (int) $arguments['column_id'];
+                    $column = $this->container['columnModel']->getById($columnId);
+                    if (empty($column)) {
+                        return $this->createToolExecutionErrorResponse('Column not found', $id);
+                    }
+                    $title = $arguments['title'] ?? $column['title'];
+                    $taskLimit = isset($arguments['task_limit']) ? (int) $arguments['task_limit'] : (int) $column['task_limit'];
+                    $description = $arguments['description'] ?? $column['description'];
+                    $hideInDashboard = isset($arguments['hide_in_dashboard'])
+                        ? (int) $arguments['hide_in_dashboard']
+                        : (int) ($column['hide_in_dashboard'] ?? 0);
+                    $updateResult = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description, $hideInDashboard);
                     $result = ['success' => $updateResult];
                     break;
                     
                 case 'delete_column':
+                    if (!isset($arguments['column_id']) || (int) $arguments['column_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
+                    }
+
                     $deleteResult = $this->container['columnModel']->remove($arguments['column_id']);
                     $result = ['success' => $deleteResult];
                     break;
@@ -604,15 +730,23 @@ class McpServer extends Base
                     
                 // Administrative Tools - Category Management
                 case 'create_category':
-                    $categoryId = $this->container['categoryModel']->create(
-                        $arguments['project_id'],
-                        $arguments['name'],
-                        $arguments['description'] ?? ''
-                    );
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
+                    }
+
+                    $categoryId = $this->container['categoryModel']->create([
+                        'project_id' => $arguments['project_id'],
+                        'name' => trim($arguments['name']),
+                        'description' => $arguments['description'] ?? ''
+                    ]);
                     $result = ['category_id' => $categoryId];
                     break;
-                    
+
                 case 'update_category':
+                    if (!isset($arguments['category_id']) || (int) $arguments['category_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
+                    }
+
                     $updateData = ['id' => $arguments['category_id']];
                     if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
                     if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
@@ -621,26 +755,42 @@ class McpServer extends Base
                     break;
                     
                 case 'delete_category':
+                    if (!isset($arguments['category_id']) || (int) $arguments['category_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
+                    }
+                    
                     $deleteResult = $this->container['categoryModel']->remove($arguments['category_id']);
                     $result = ['success' => $deleteResult];
                     break;
-                    
+
                 case 'get_categories':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                    }
+
                     $categories = $this->container['categoryModel']->getAll($arguments['project_id']);
                     $result = array_values($categories);
                     break;
                     
                 // Administrative Tools - Swimlane Management
                 case 'create_swimlane':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
+                    }
+
                     $swimlaneId = $this->container['swimlaneModel']->create(
                         $arguments['project_id'],
-                        $arguments['name'],
+                        trim($arguments['name']),
                         $arguments['description'] ?? ''
                     );
                     $result = ['swimlane_id' => $swimlaneId];
                     break;
-                    
+
                 case 'update_swimlane':
+                    if (!isset($arguments['swimlane_id']) || (int) $arguments['swimlane_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: swimlane_id must be a positive integer', $id);
+                    }
+
                     $updateData = [];
                     if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
                     if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
@@ -649,32 +799,53 @@ class McpServer extends Base
                     break;
                     
                 case 'delete_swimlane':
-                    $deleteResult = $this->container['swimlaneModel']->remove($arguments['swimlane_id']);
+                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
+                    $swimlaneId = isset($arguments['swimlane_id']) ? (int) $arguments['swimlane_id'] : 0;
+
+                    if ($projectId <= 0 || $swimlaneId <= 0) {
+                        return $this->createToolExecutionErrorResponse(
+                            'Invalid arguments: project_id and swimlane_id must be positive integers',
+                            $id
+                        );
+                    }
+
+                    $deleteResult = $this->container['swimlaneModel']->remove($projectId, $swimlaneId);
                     $result = ['success' => $deleteResult];
                     break;
                     
                 case 'get_swimlanes':
+                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                    }
+
                     $swimlanes = $this->container['swimlaneModel']->getAll($arguments['project_id']);
                     $result = array_values($swimlanes);
                     break;
                     
                 default:
-                    return $this->errorResponse(-32601, 'Tool not found: ' . $toolName, $id);
+                    return $this->errorResponse(-32602, 'Unknown tool: ' . $toolName, $id);
             }
             
             return $this->createSuccessResponse($result, $id);
             
+        } catch (InvalidArgumentException $exception) {
+            return $this->createToolExecutionErrorResponse($exception->getMessage(), $id);
         } catch (Throwable $exception) {
             $this->logThrowable(sprintf('Tool execution failed for %s', $toolName), $exception);
-            return $this->errorResponse(-32603, 'Tool execution failed', $id);
+            return $this->createToolExecutionErrorResponse('Tool execution failed', $id);
         }
     }
     
     /**
      * List available resources
      */
-    private function listResources(int|string|null $id): array
+    private function listResources(array $params, int|string|null $id): array
     {
+        $cursor = $params['cursor'] ?? null;
+        if ($cursor !== null && !is_string($cursor)) {
+            return $this->errorResponse(-32602, 'Invalid params: cursor must be a string', $id);
+        }
+
         return [
             'jsonrpc' => '2.0',
             'id' => $id,
@@ -694,6 +865,25 @@ class McpServer extends Base
                     ]
                 ]
             ]
+        ];
+    }
+
+    /**
+     * List available resource templates.
+     */
+    private function listResourceTemplates(array $params, int|string|null $id): array
+    {
+        $cursor = $params['cursor'] ?? null;
+        if ($cursor !== null && !is_string($cursor)) {
+            return $this->errorResponse(-32602, 'Invalid params: cursor must be a string', $id);
+        }
+
+        return [
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => [
+                'resourceTemplates' => [],
+            ],
         ];
     }
     
@@ -717,7 +907,7 @@ class McpServer extends Base
                     break;
                     
                 default:
-                    return $this->errorResponse(-32602, 'Resource not found: ' . $uri, $id);
+                    return $this->errorResponse(-32002, 'Resource not found', $id, ['uri' => $uri]);
             }
             
             return [
@@ -761,9 +951,7 @@ class McpServer extends Base
         return [
             'jsonrpc' => '2.0',
             'id' => $id,
-            'result' => [
-                'message' => 'pong'
-            ]
+            'result' => (object)[]
         ];
     }
     
@@ -800,15 +988,38 @@ class McpServer extends Base
     /**
      * Create error response
      */
-    private function errorResponse(int $code, string $message, int|string|null $id): array
+    private function errorResponse(int $code, string $message, int|string|null $id, mixed $data = null): array
+    {
+        $error = [
+            'code' => $code,
+            'message' => $message
+        ];
+
+        if ($data !== null) {
+            $error['data'] = $data;
+        }
+
+        return [
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'error' => $error,
+        ];
+    }
+
+    private function createToolExecutionErrorResponse(string $message, int|string|null $id): array
     {
         return [
             'jsonrpc' => '2.0',
             'id' => $id,
-            'error' => [
-                'code' => $code,
-                'message' => $message
-            ]
+            'result' => [
+                'content' => [
+                    [
+                        'type' => 'text',
+                        'text' => $message,
+                    ],
+                ],
+                'isError' => true,
+            ],
         ];
     }
 
@@ -840,7 +1051,6 @@ class McpServer extends Base
         } catch (InvalidArgumentException $exception) {
             return $this->createAndLogFailure(
                 'Invalid params for reorder_columns',
-                -32602,
                 $id,
                 $exception->getMessage(),
                 ['arguments' => $arguments]
@@ -855,7 +1065,6 @@ class McpServer extends Base
         if (($mismatchError = $this->checkColumnMismatch($columnIds, $currentIds)) !== null) {
             return $this->createAndLogFailure(
                 'State mismatch for reorder_columns',
-                -32602,
                 $id,
                 $mismatchError,
                 ['project_id' => $projectId, 'requested' => $columnIds, 'current' => $currentIds]
@@ -874,7 +1083,6 @@ class McpServer extends Base
         } catch (Throwable $exception) {
             return $this->createAndLogFailure(
                 'Execution failed for reorder_columns',
-                -32603,
                 $id,
                 'Column reorder failed during execution.',
                 ['project_id' => $projectId, 'requested' => $columnIds],
@@ -919,7 +1127,6 @@ class McpServer extends Base
      */
     private function createAndLogFailure(
         string $logMessage,
-        int $code,
         int|string|null $id,
         string $responseMessage,
         array $context,
@@ -936,7 +1143,7 @@ class McpServer extends Base
 
         $this->logError($logMessage, $logContext);
 
-        return $this->errorResponse($code, $responseMessage, $id);
+        return $this->createToolExecutionErrorResponse($responseMessage, $id);
     }
 
     /**
