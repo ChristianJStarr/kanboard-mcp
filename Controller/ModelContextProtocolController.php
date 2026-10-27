@@ -61,13 +61,10 @@ class ModelContextProtocolController extends Base
             return;
         }
 
-        $acceptHeader = $_SERVER['HTTP_ACCEPT'] ?? '';
-
-        if ($requestMethod === 'GET' && strpos($acceptHeader, 'text/event-stream') !== false) {
-            $this->handleSSE();
-            return;
-        }
-
+        // No server-initiated stream is offered: Streamable HTTP allows a server
+        // to answer GET with 405, and the old loop tied up a PHP worker for the
+        // lifetime of each connection.
+        header('Allow: POST, OPTIONS');
         $this->sendError(405, 'Method Not Allowed');
     }
     
@@ -152,51 +149,6 @@ class ModelContextProtocolController extends Base
             http_response_code(500);
             $this->sendJsonRpcError(-32603, 'Internal error', isset($request['id']) ? $request['id'] : null, 500);
             return;
-        }
-    }
-    
-    /**
-     * Handle SSE requests from Cursor IDE
-     */
-    private function handleSSE(): void
-    {
-        // Set SSE headers
-        header('Content-Type: text/event-stream');
-        header('X-Accel-Buffering: no');
-        header('Cache-Control: no-cache');
-        header('Connection: keep-alive');
-        header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, Last-Event-ID, X-Requested-With');
-        @ini_set('output_buffering', 'off');
-        @ini_set('zlib.output_compression', '0');
-
-        // Disable buffering
-        while (ob_get_level()) {
-            ob_end_clean();
-        }
-        ob_implicit_flush(true);
-        
-        // Prime reconnect semantics with an event id and empty data payload.
-        $eventId = bin2hex(random_bytes(8));
-        echo "id: {$eventId}\n";
-        echo "data:\n\n";
-        flush();
-
-        // Keep connection alive with lightweight comment heartbeats.
-        $counter = 0;
-        while (true) {
-            if ($counter % 30 === 0) {
-                echo ': heartbeat ' . time() . "\n\n";
-                flush();
-            }
-
-            // Check if client disconnected
-            if (connection_aborted()) {
-                break;
-            }
-            
-            sleep(1);
-            $counter++;
         }
     }
     
