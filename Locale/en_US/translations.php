@@ -33,4 +33,6 @@ return array(
     'Provides MCP server functionality for full Kanboard control via Model Context Protocol' => 'Provides MCP server functionality for full Kanboard control via Model Context Protocol',
     'Copy this URL to configure your MCP client. Token is included for authentication.' => 'Copy this URL to configure your MCP client. Token is included for authentication.',
     'This URL provides full access to your Kanboard instance. Keep it secure.' => 'This URL provides full access to your Kanboard instance. Keep it secure.',
-); 
+    'New token generated. Copy it now: it is stored hashed and will not be shown again.' => 'New token generated. Copy it now: it is stored hashed and will not be shown again.',
+    'A token was generated on %s. It cannot be displayed again; reset it to obtain a new one.' => 'A token was generated on %s. It cannot be displayed again; reset it to obtain a new one.',
+);

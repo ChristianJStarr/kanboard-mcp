@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Core\Base;
+use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -303,7 +304,7 @@ class ModelContextProtocolController extends Base
         
         $this->response->html($this->helper->layout->config('modelcontextprotocol:config/integration', [
             'title' => 'Model Context Protocol Settings',
-            'tokens' => $this->mcpTokenModel->getAll(),
+            'token' => $this->mcpTokenModel->getActiveToken(),
             'mcp_url' => $this->getMcpUrl()
         ]));
     }
@@ -339,24 +340,22 @@ class ModelContextProtocolController extends Base
     public function generateToken()
     {
         $this->ensureTablesExist();
-        
-        $name = $this->request->getStringParam('name', 'Default Token');
-        $token = bin2hex(random_bytes(32));
-        
-        $result = $this->mcpTokenModel->create([
-            'token' => $token,
-            'name' => $name,
-            'created_at' => time(),
-            'is_active' => 1
-        ]);
-        
-        if ($result) {
-            $this->flash->success('Token generated successfully');
-        } else {
-            $this->flash->failure('Failed to generate token');
+
+        if (! $this->token->validateCSRFToken($this->request->getStringParam('csrf_token'))) {
+            throw new AccessForbiddenException();
         }
-        
-        $this->response->redirect($this->helper->url->to('ModelContextProtocolController', 'settings', ['plugin' => 'ModelContextProtocol']));
+
+        $token = $this->mcpTokenModel->generateToken();
+
+        if ($token !== false) {
+            // Shown once on the Integrations page; only the hash is stored.
+            session_set('mcpNewToken', $token);
+            $this->flash->success(t('New MCP token generated successfully'));
+        } else {
+            $this->flash->failure(t('Unable to generate MCP token'));
+        }
+
+        $this->response->redirect($this->helper->url->to('ConfigController', 'integrations'));
     }
     
     /**

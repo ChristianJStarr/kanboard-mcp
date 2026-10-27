@@ -2,7 +2,19 @@
 
 namespace Kanboard\Plugin\ModelContextProtocol\Schema;
 
-const VERSION = 1;
+const VERSION = 2;
+
+function version_2($pdo)
+{
+    // Store only a SHA-256 hash of each token from now on.
+    $rq = $pdo->prepare('SELECT id, token FROM mcp_tokens');
+    $rq->execute();
+    $update = $pdo->prepare('UPDATE mcp_tokens SET token=? WHERE id=?');
+
+    foreach ($rq->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+        $update->execute(array(hash('sha256', $row['token']), $row['id']));
+    }
+}
 
 function version_1($pdo)
 {
