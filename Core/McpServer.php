@@ -603,6 +603,16 @@ class McpServer extends Base
                         );
                     }
 
+                    // TaskPositionModel::movePosition() trusts project_id; make sure the
+                    // task really belongs to it before positions are recalculated there.
+                    $task = $this->container['taskFinderModel']->getById($taskId);
+                    if (empty($task)) {
+                        return $this->createToolExecutionErrorResponse('Task not found', $id);
+                    }
+                    if ((int) $task['project_id'] !== $projectId) {
+                        return $this->createToolExecutionErrorResponse('Invalid arguments: task does not belong to project_id', $id);
+                    }
+
                     $moveResult = $this->container['taskPositionModel']->movePosition(
                         $projectId,
                         $taskId,
