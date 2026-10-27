@@ -669,7 +669,7 @@ class McpServer extends Base
                     
                 case 'get_users':
                     $users = $this->container['userModel']->getAll();
-                    $result = array_values($users);
+                    $result = array_map([$this, 'sanitizeUser'], array_values($users));
                     break;
                     
                 case 'get_task_comments':
@@ -903,7 +903,7 @@ class McpServer extends Base
                     
                 case 'kanboard://users':
                     $users = $this->container['userModel']->getAll();
-                    $content = json_encode(array_values($users), JSON_PRETTY_PRINT);
+                    $content = json_encode(array_map([$this, 'sanitizeUser'], array_values($users)), JSON_PRETTY_PRINT);
                     break;
                     
                 default:
@@ -927,6 +927,26 @@ class McpServer extends Base
             $this->logThrowable('Resource read failed', $exception);
             return $this->errorResponse(-32603, 'Resource read failed', $id);
         }
+    }
+    
+    /**
+     * Reduce a users row to an explicit allow-list of fields. UserModel::getAll()
+     * returns every column of the users table, including the password hash,
+     * api_access_token, the remember-me token, twofactor_secret and OAuth ids,
+     * none of which may reach the MCP client.
+     */
+    private function sanitizeUser(array $user): array
+    {
+        return [
+            'id' => (int) ($user['id'] ?? 0),
+            'username' => (string) ($user['username'] ?? ''),
+            'name' => (string) ($user['name'] ?? ''),
+            'email' => (string) ($user['email'] ?? ''),
+            'role' => (string) ($user['role'] ?? ''),
+            'is_active' => (int) ($user['is_active'] ?? 0),
+            'timezone' => (string) ($user['timezone'] ?? ''),
+            'language' => (string) ($user['language'] ?? ''),
+        ];
     }
     
     /**
