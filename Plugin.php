@@ -18,11 +18,11 @@ class Plugin extends Base
     {
         $this->template->hook->attach('template:config:integrations', 'ModelContextProtocol:config/integration');
         
-        // Allow public access to MCP controller (bypass authentication for API)
-        $this->applicationAccessMap->add('ModelContextProtocolController', '*', Role::APP_PUBLIC);
-        
-        // But require admin access for token generation
-        $this->applicationAccessMap->add('ModelContextProtocolController', 'generateToken', Role::APP_ADMIN);
+        // Only the MCP endpoint itself is public (it authenticates with the MCP
+        // token). Token management stays admin-only; anything else falls back
+        // to Kanboard's default role.
+        $this->applicationAccessMap->add('ModelContextProtocolController', 'handle', Role::APP_PUBLIC);
+        $this->applicationAccessMap->add('ModelContextProtocolController', array('settings', 'generateToken'), Role::APP_ADMIN);
     }
 
     public function onStartup()
