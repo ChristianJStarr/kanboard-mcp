@@ -41,6 +41,10 @@ class McpServer extends Base
      */
     public function handleRequest(array $request): ?array
     {
+        if (array_key_exists('id', $request) && $request['id'] !== null && !is_int($request['id']) && !is_string($request['id'])) {
+            return $this->errorResponse(-32600, 'Invalid Request: id must be a string, an integer or null', null);
+        }
+
         if (!isset($request['jsonrpc']) || $request['jsonrpc'] !== '2.0') {
             return $this->errorResponse(-32600, 'Invalid Request', isset($request['id']) ? $request['id'] : null);
         }
