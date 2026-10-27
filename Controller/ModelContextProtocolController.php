@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Core\Base;
+use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -339,24 +340,18 @@ class ModelContextProtocolController extends Base
     public function generateToken()
     {
         $this->ensureTablesExist();
-        
-        $name = $this->request->getStringParam('name', 'Default Token');
-        $token = bin2hex(random_bytes(32));
-        
-        $result = $this->mcpTokenModel->create([
-            'token' => $token,
-            'name' => $name,
-            'created_at' => time(),
-            'is_active' => 1
-        ]);
-        
-        if ($result) {
-            $this->flash->success('Token generated successfully');
-        } else {
-            $this->flash->failure('Failed to generate token');
+
+        if (! $this->token->validateCSRFToken($this->request->getStringParam('csrf_token'))) {
+            throw new AccessForbiddenException();
         }
-        
-        $this->response->redirect($this->helper->url->to('ModelContextProtocolController', 'settings', ['plugin' => 'ModelContextProtocol']));
+
+        if ($this->mcpTokenModel->generateToken()) {
+            $this->flash->success(t('New MCP token generated successfully'));
+        } else {
+            $this->flash->failure(t('Unable to generate MCP token'));
+        }
+
+        $this->response->redirect($this->helper->url->to('ConfigController', 'integrations'));
     }
     
     /**
