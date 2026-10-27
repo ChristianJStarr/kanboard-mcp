@@ -29,14 +29,21 @@ class McpTokenModel extends Base
      */
     public function validateToken($token)
     {
-        if (empty($token)) {
+        if (empty($token) || ! is_string($token)) {
             return false;
         }
-        
-        return $this->db->table(self::TABLE)
-            ->eq('token', $token)
+
+        $activeTokens = $this->db->table(self::TABLE)
             ->eq('is_active', 1)
-            ->exists();
+            ->findAllByColumn('token');
+
+        foreach ($activeTokens as $activeToken) {
+            if (hash_equals((string) $activeToken, $token)) {
+                return true;
+            }
+        }
+
+        return false;
     }
     
     /**
