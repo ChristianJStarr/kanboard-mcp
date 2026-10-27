@@ -30,22 +30,27 @@ class ModelContextProtocolController extends Base
      */
     public function handle()
     {
-        // Add CORS headers immediately for all requests
-        header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
-        header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, X-Requested-With, Origin, User-Agent, Cache-Control, Pragma');
-        header('Access-Control-Expose-Headers: Content-Type, Cache-Control, Expires, Pragma');
-        header('Access-Control-Max-Age: 86400');
+        // Cross-origin browser requests are only answered for the server's own
+        // origin; a wildcard would advertise the endpoint to every site.
+        if (!$this->isValidOrigin()) {
+            $this->sendError(403, 'Forbidden: invalid origin');
+            return;
+        }
+
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        if ($origin !== '') {
+            header('Access-Control-Allow-Origin: ' . $origin);
+            header('Vary: Origin');
+            header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
+            header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, X-Requested-With, Origin, User-Agent, Cache-Control, Pragma');
+            header('Access-Control-Expose-Headers: Content-Type, Cache-Control, Expires, Pragma');
+            header('Access-Control-Max-Age: 86400');
+        }
         
         // Handle OPTIONS preflight immediately
         if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
             http_response_code(200);
             exit;
-        }
-
-        if (!$this->isValidOrigin()) {
-            $this->sendError(403, 'Forbidden: invalid origin');
-            return;
         }
         
         // Validate token first
@@ -165,7 +170,6 @@ class ModelContextProtocolController extends Base
         header('X-Accel-Buffering: no');
         header('Cache-Control: no-cache');
         header('Connection: keep-alive');
-        header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, Last-Event-ID, X-Requested-With');
         @ini_set('output_buffering', 'off');
         @ini_set('zlib.output_compression', '0');
