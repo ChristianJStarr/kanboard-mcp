@@ -101,7 +101,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 
 1. **Download & Extract**: Copy the `ModelContextProtocol` folder to your Kanboard `plugins/` directory
 2. **Activate Plugin**: Access Kanboard as administrator → **Settings** → **Plugins** → Enable MCP Plugin
-3. **Generate Token**: Go to **Settings** → **Integrations** → **Configure MCP Settings** → **Generate Token**
+3. **Generate Token**: Go to **Settings** → **Integrations** → **Model Context Protocol**, pick the user the token should act as, and click **Generate Token**. The token is shown once; only a hash is stored.
 4. **Copy Server URL**: Use the generated MCP Server URL with your AI assistant
 
 ### MCP Server URL Format
@@ -127,6 +127,7 @@ The plugin works with MCP-compatible clients and negotiates protocol versions up
 ## Security Features
 
 - **Token-Based Authentication**: Each token provides controlled access to your Kanboard instance
+- **User-Scoped Tokens**: Bind the token to a Kanboard user and the MCP client gets exactly that user's projects and roles (viewer / member / manager); tasks and comments are attributed to that user. An unrestricted token (no user) keeps full access to every project.
 - **Secure Communication**: All requests require valid token authentication
 - **User Context**: Operations maintain proper user attribution and permissions
 - **Activity Logging**: All MCP operations are logged for audit trails

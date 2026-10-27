@@ -33,4 +33,13 @@ return array(
     'Provides MCP server functionality for full Kanboard control via Model Context Protocol' => 'Provides MCP server functionality for full Kanboard control via Model Context Protocol',
     'Copy this URL to configure your MCP client. Token is included for authentication.' => 'Copy this URL to configure your MCP client. Token is included for authentication.',
     'This URL provides full access to your Kanboard instance. Keep it secure.' => 'This URL provides full access to your Kanboard instance. Keep it secure.',
-); 
+    'New token generated. Copy it now: it is stored hashed and will not be shown again.' => 'New token generated. Copy it now: it is stored hashed and will not be shown again.',
+    'A token was generated on %s. It cannot be displayed again; reset it to obtain a new one.' => 'A token was generated on %s. It cannot be displayed again; reset it to obtain a new one.',
+    'This token is unrestricted: it can read and change every project without any user permission check. Bind it to a user to apply that user\'s project roles.' => 'This token is unrestricted: it can read and change every project without any user permission check. Bind it to a user to apply that user\'s project roles.',
+    'This token acts as %s and is limited to that user\'s projects and roles.' => 'This token acts as %s and is limited to that user\'s projects and roles.',
+    'Act as user' => 'Act as user',
+    'Unrestricted (no user, all projects)' => 'Unrestricted (no user, all projects)',
+    'The MCP client gets exactly the project access and roles of the selected user. Tasks and comments are attributed to that user.' => 'The MCP client gets exactly the project access and roles of the selected user. Tasks and comments are attributed to that user.',
+    'Generate MCP token' => 'Generate MCP token',
+    'The current token stops working as soon as a new one is generated.' => 'The current token stops working as soon as a new one is generated.',
+);

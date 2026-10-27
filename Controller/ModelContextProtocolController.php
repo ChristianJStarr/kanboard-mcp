@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Core\Base;
+use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -24,6 +25,11 @@ class ModelContextProtocolController extends Base
         '2025-03-26',
         '2024-11-05',
     ];
+
+    /**
+     * Kanboard user the presented token acts as (0 = unrestricted token)
+     */
+    private int $mcpUserId = 0;
 
     /**
      * Handle MCP requests for different transport types
@@ -78,12 +84,26 @@ class ModelContextProtocolController extends Base
     {
         $token = $_GET['token'] ?? '';
         
-        if (empty($token)) {
+        if (empty($token) || !is_string($token)) {
             return false;
         }
         
-        if (!$this->mcpTokenModel->validateToken($token)) {
+        $row = $this->mcpTokenModel->findActiveTokenRow($token);
+        if ($row === null) {
             return false;
+        }
+
+        if ($row['user_id'] > 0) {
+            $user = $this->userModel->getById($row['user_id']);
+            if (empty($user) || (int) $user['is_active'] !== 1) {
+                // The bound account is gone or disabled: the token dies with it.
+                return false;
+            }
+
+            // Act as that user: creator/comment attribution and Kanboard's own
+            // user checks all read the session user.
+            $this->userSession->initialize($user);
+            $this->mcpUserId = (int) $user['id'];
         }
         
         return true;
@@ -137,7 +157,7 @@ class ModelContextProtocolController extends Base
         $isNotification = !array_key_exists('id', $request);
 
         try {
-            $mcpServer = new McpServer($this->container);
+            $mcpServer = new McpServer($this->container, $this->mcpUserId);
             $response = $mcpServer->handleRequest($request);
 
             if ($isNotification || $response === null) {
@@ -303,7 +323,7 @@ class ModelContextProtocolController extends Base
         
         $this->response->html($this->helper->layout->config('modelcontextprotocol:config/integration', [
             'title' => 'Model Context Protocol Settings',
-            'tokens' => $this->mcpTokenModel->getAll(),
+            'token' => $this->mcpTokenModel->getActiveToken(),
             'mcp_url' => $this->getMcpUrl()
         ]));
     }
@@ -339,24 +359,44 @@ class ModelContextProtocolController extends Base
     public function generateToken()
     {
         $this->ensureTablesExist();
-        
-        $name = $this->request->getStringParam('name', 'Default Token');
-        $token = bin2hex(random_bytes(32));
-        
-        $result = $this->mcpTokenModel->create([
-            'token' => $token,
-            'name' => $name,
-            'created_at' => time(),
-            'is_active' => 1
-        ]);
-        
-        if ($result) {
-            $this->flash->success('Token generated successfully');
-        } else {
-            $this->flash->failure('Failed to generate token');
+
+        if (! $this->request->isPost()) {
+            // The Integrations page wraps plugin panels in its own <form>, so the
+            // selector lives in a modal (loaded here) that posts back to this action.
+            $activeToken = $this->mcpTokenModel->getActiveToken();
+
+            $this->response->html($this->template->render('ModelContextProtocol:config/token_modal', [
+                'values' => ['user_id' => (int) ($activeToken['user_id'] ?? 0)],
+                'users' => [0 => t('Unrestricted (no user, all projects)')] + $this->userModel->getActiveUsersList(),
+                'has_token' => $activeToken !== null,
+            ]));
+            return;
         }
-        
-        $this->response->redirect($this->helper->url->to('ModelContextProtocolController', 'settings', ['plugin' => 'ModelContextProtocol']));
+
+        // Modal form submission; getValues() validates the CSRF token.
+        $values = $this->request->getValues();
+        if ($values === []) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = (int) ($values['user_id'] ?? 0);
+        if ($userId > 0 && ! $this->userModel->exists($userId)) {
+            $this->flash->failure(t('Unable to generate MCP token'));
+            $this->response->redirect($this->helper->url->to('ConfigController', 'integrations'));
+            return;
+        }
+
+        $token = $this->mcpTokenModel->generateToken($userId);
+
+        if ($token !== false) {
+            // Shown once on the Integrations page; only the hash is stored.
+            session_set('mcpNewToken', $token);
+            $this->flash->success(t('New MCP token generated successfully'));
+        } else {
+            $this->flash->failure(t('Unable to generate MCP token'));
+        }
+
+        $this->response->redirect($this->helper->url->to('ConfigController', 'integrations'));
     }
     
     /**

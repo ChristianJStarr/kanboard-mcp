@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Core;
 
 use Kanboard\Core\Base;
+use Kanboard\Core\Security\Role;
 use Kanboard\Model\ColumnModel;
 use Kanboard\Model\TaskModel;
 use InvalidArgumentException;
@@ -31,11 +32,150 @@ class McpServer extends Base
         '2024-11-05',
     ];
 
-    public function __construct($container)
+    /**
+     * Project role ranks, lowest first (custom project roles count as member,
+     * the way Kanboard's ProjectRoleHelper treats them).
+     */
+    private const PROJECT_ROLE_RANK = [
+        Role::PROJECT_VIEWER => 1,
+        Role::PROJECT_MEMBER => 2,
+        Role::PROJECT_MANAGER => 3,
+    ];
+
+    /**
+     * Kanboard user the token acts as; 0 keeps the historical unrestricted behaviour.
+     */
+    private int $userId;
+
+    /**
+     * @var array<string, mixed>|null
+     */
+    private ?array $boundUser = null;
+
+    public function __construct($container, int $userId = 0)
     {
         $this->container = $container;
+        $this->userId = $userId;
     }
-    
+
+    private function isScoped(): bool
+    {
+        return $this->userId > 0;
+    }
+
+    private function boundUserRole(): string
+    {
+        if (!$this->isScoped()) {
+            return '';
+        }
+
+        if ($this->boundUser === null) {
+            $user = $this->container['userModel']->getById($this->userId);
+            $this->boundUser = is_array($user) ? $user : [];
+        }
+
+        return (string) ($this->boundUser['role'] ?? '');
+    }
+
+    private function isAppAdmin(): bool
+    {
+        return $this->boundUserRole() === Role::APP_ADMIN;
+    }
+
+    /**
+     * Enforce the bound user's role on a project. Unrestricted tokens and
+     * application administrators pass, as in Kanboard's own authorization.
+     *
+     * @throws InvalidArgumentException when the bound user lacks the role
+     */
+    private function requireProjectRole(int|callable $projectId, string $requiredRole): void
+    {
+        if (!$this->isScoped() || $this->isAppAdmin()) {
+            return;
+        }
+
+        if (is_callable($projectId)) {
+            $projectId = (int) $projectId();
+        }
+
+        $role = (string) $this->container['projectUserRoleModel']->getUserRole($projectId, $this->userId);
+        $rank = $role === '' ? 0 : (self::PROJECT_ROLE_RANK[$role] ?? self::PROJECT_ROLE_RANK[Role::PROJECT_MEMBER]);
+
+        if ($rank < self::PROJECT_ROLE_RANK[$requiredRole]) {
+            throw new InvalidArgumentException(sprintf('Access denied: %s role required on project %d', $requiredRole, $projectId));
+        }
+    }
+
+    /**
+     * Enforce the bound user's role on the project a task belongs to.
+     *
+     * @return int the task's project id
+     */
+    private function requireTaskRole(int $taskId, string $requiredRole): void
+    {
+        if (!$this->isScoped() || $this->isAppAdmin()) {
+            return;
+        }
+
+        $projectId = (int) $this->container['taskFinderModel']->getProjectId($taskId);
+        if ($projectId <= 0) {
+            throw new InvalidArgumentException('Task not found');
+        }
+
+        $this->requireProjectRole($projectId, $requiredRole);
+    }
+
+    /**
+     * Projects the token may see: all of them for unrestricted and admin
+     * tokens, otherwise the bound user's projects.
+     *
+     * @return array<int|string, array<string, mixed>>
+     */
+    private function getVisibleProjects(): array
+    {
+        if (!$this->isScoped() || $this->isAppAdmin()) {
+            return $this->container['projectModel']->getAll();
+        }
+
+        $ids = $this->container['projectPermissionModel']->getProjectIds($this->userId);
+
+        return $ids === [] ? [] : $this->container['projectModel']->getAllByIds($ids);
+    }
+
+    /**
+     * Users the token may see. Unrestricted and admin tokens get every
+     * account, as the Kanboard user list is admin-only. A bound user gets the
+     * members (direct or via groups) of the projects they belong to, which is
+     * what the UI shows them in assignee lists.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function getVisibleUsers(): array
+    {
+        $users = array_values($this->container['userModel']->getAll());
+
+        if (!$this->isScoped() || $this->isAppAdmin()) {
+            return $users;
+        }
+
+        $visible = [$this->userId => true];
+        foreach ($this->getVisibleProjects() as $project) {
+            if (!empty($project['is_everybody_allowed'])) {
+                return $users;
+            }
+            $projectId = (int) $project['id'];
+            $members = array_merge(
+                $this->container['projectUserRoleModel']->getUsers($projectId),
+                $this->container['projectGroupRoleModel']->getUsers($projectId)
+            );
+            foreach ($members as $member) {
+                $visible[(int) $member['id']] = true;
+            }
+        }
+
+        return array_values(array_filter($users, fn (array $user): bool => isset($visible[(int) ($user['id'] ?? 0)])));
+    }
+
     /**
      * Handle MCP JSON-RPC request
      */
@@ -304,7 +444,7 @@ class McpServer extends Base
             ],
             [
                 'name' => 'get_users',
-                'description' => 'Get all users in the system',
+                'description' => 'Get the users visible to this token (all users for unrestricted or admin tokens, otherwise the members of the bound user\'s projects)',
                 'inputSchema' => [
                     'type' => 'object',
                     'additionalProperties' => false,
@@ -505,8 +645,7 @@ class McpServer extends Base
             
             switch ($toolName) {
                 case 'get_projects':
-                    $projects = $this->container['projectModel']->getAll();
-                    $result = array_values($projects);
+                    $result = array_values($this->getVisibleProjects());
                     break;
                     
                 case 'create_project':
@@ -514,10 +653,20 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
                     }
 
-                    $projectId = $this->container['projectModel']->create([
+                    $values = [
                         'name' => trim($arguments['name']),
                         'description' => $arguments['description'] ?? ''
-                    ]);
+                    ];
+                    if ($this->isScoped()) {
+                        // Same rule as the UI: plain users may only create private projects,
+                        // and the creator becomes owner and project manager.
+                        if ($this->boundUserRole() === Role::APP_USER) {
+                            $values['is_private'] = 1;
+                        }
+                        $projectId = $this->container['projectModel']->create($values, $this->userId, true);
+                    } else {
+                        $projectId = $this->container['projectModel']->create($values);
+                    }
                     $result = ['project_id' => $projectId];
                     break;
                     
@@ -538,6 +687,8 @@ class McpServer extends Base
                         );
                     }
 
+                    $this->requireProjectRole($projectId, Role::PROJECT_VIEWER);
+
                     try {
                         $tasks = $this->container['taskFinderModel']->getAll($projectId, $statusId);
                         $result = array_values($tasks);
@@ -556,6 +707,8 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_MEMBER);
+
                     $taskData = [
                         'project_id' => (int) $arguments['project_id'],
                         'title' => trim($arguments['title']),
@@ -573,6 +726,8 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_MEMBER);
+
                     $taskData = ['id' => $arguments['task_id']];
                     if (isset($arguments['title'])) $taskData['title'] = $arguments['title'];
                     if (isset($arguments['description'])) $taskData['description'] = $arguments['description'];
@@ -587,6 +742,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_VIEWER);
                     $columns = $this->container['columnModel']->getAll($arguments['project_id']);
                     $result = array_values($columns);
                     break;
@@ -603,6 +759,9 @@ class McpServer extends Base
                         );
                     }
 
+                    $this->requireProjectRole($projectId, Role::PROJECT_MEMBER);
+                    $this->requireTaskRole($taskId, Role::PROJECT_MEMBER);
+
                     $moveResult = $this->container['taskPositionModel']->movePosition(
                         $projectId,
                         $taskId,
@@ -617,6 +776,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
                     }
                     
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_VIEWER);
                     $task = $this->container['taskFinderModel']->getById($arguments['task_id']);
                     $result = $task;
                     break;
@@ -626,6 +786,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_MEMBER);
                     $deleteResult = $this->container['taskModel']->remove($arguments['task_id']);
                     $result = ['success' => $deleteResult];
                     break;
@@ -635,6 +796,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id and user_id must be positive integers', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_MEMBER);
                     $assignResult = $this->container['taskModificationModel']->update([
                         'id' => $arguments['task_id'],
                         'owner_id' => $arguments['user_id']
@@ -647,6 +809,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and due_date must be a non-empty string', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_MEMBER);
                     $dueDateResult = $this->container['taskModificationModel']->update([
                         'id' => $arguments['task_id'],
                         'date_due' => $arguments['due_date']
@@ -659,16 +822,17 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and comment must be a non-empty string', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_MEMBER);
                     $commentId = $this->container['commentModel']->create([
                         'task_id' => $arguments['task_id'],
                         'comment' => $arguments['comment'],
-                        'user_id' => isset($arguments['user_id']) ? (int) $arguments['user_id'] : 0
+                        'user_id' => $this->userId
                     ]);
                     $result = ['comment_id' => $commentId];
                     break;
                     
                 case 'get_users':
-                    $users = $this->container['userModel']->getAll();
+                    $users = $this->getVisibleUsers();
                     $result = array_values($users);
                     break;
                     
@@ -677,6 +841,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
                     }
 
+                    $this->requireTaskRole((int) $arguments['task_id'], Role::PROJECT_VIEWER);
                     $comments = $this->container['commentModel']->getAll($arguments['task_id']);
                     $result = array_values($comments);
                     break;
@@ -687,6 +852,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and title must be a non-empty string', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_MANAGER);
                     $columnId = $this->container['columnModel']->create(
                         $arguments['project_id'],
                         trim($arguments['title']),
@@ -706,6 +872,7 @@ class McpServer extends Base
                     if (empty($column)) {
                         return $this->createToolExecutionErrorResponse('Column not found', $id);
                     }
+                    $this->requireProjectRole((int) $column['project_id'], Role::PROJECT_MANAGER);
                     $title = $arguments['title'] ?? $column['title'];
                     $taskLimit = isset($arguments['task_limit']) ? (int) $arguments['task_limit'] : (int) $column['task_limit'];
                     $description = $arguments['description'] ?? $column['description'];
@@ -721,6 +888,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
                     }
 
+                    $this->requireProjectRole(fn() => $this->container['columnModel']->getProjectId((int) $arguments['column_id']), Role::PROJECT_MANAGER);
                     $deleteResult = $this->container['columnModel']->remove($arguments['column_id']);
                     $result = ['success' => $deleteResult];
                     break;
@@ -734,6 +902,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_MANAGER);
                     $categoryId = $this->container['categoryModel']->create([
                         'project_id' => $arguments['project_id'],
                         'name' => trim($arguments['name']),
@@ -747,6 +916,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
                     }
 
+                    $this->requireProjectRole(fn() => $this->container['categoryModel']->getProjectId((int) $arguments['category_id']), Role::PROJECT_MANAGER);
                     $updateData = ['id' => $arguments['category_id']];
                     if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
                     if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
@@ -759,6 +929,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
                     }
                     
+                    $this->requireProjectRole(fn() => $this->container['categoryModel']->getProjectId((int) $arguments['category_id']), Role::PROJECT_MANAGER);
                     $deleteResult = $this->container['categoryModel']->remove($arguments['category_id']);
                     $result = ['success' => $deleteResult];
                     break;
@@ -768,6 +939,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_VIEWER);
                     $categories = $this->container['categoryModel']->getAll($arguments['project_id']);
                     $result = array_values($categories);
                     break;
@@ -778,6 +950,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_MANAGER);
                     $swimlaneId = $this->container['swimlaneModel']->create(
                         $arguments['project_id'],
                         trim($arguments['name']),
@@ -790,6 +963,8 @@ class McpServer extends Base
                     if (!isset($arguments['swimlane_id']) || (int) $arguments['swimlane_id'] <= 0) {
                         return $this->createToolExecutionErrorResponse('Invalid arguments: swimlane_id must be a positive integer', $id);
                     }
+
+                    $this->requireProjectRole(fn() => $this->container['swimlaneModel']->getById((int) $arguments['swimlane_id'])['project_id'] ?? 0, Role::PROJECT_MANAGER);
 
                     $updateData = [];
                     if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
@@ -809,6 +984,7 @@ class McpServer extends Base
                         );
                     }
 
+                    $this->requireProjectRole($projectId, Role::PROJECT_MANAGER);
                     $deleteResult = $this->container['swimlaneModel']->remove($projectId, $swimlaneId);
                     $result = ['success' => $deleteResult];
                     break;
@@ -818,6 +994,7 @@ class McpServer extends Base
                         return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
                     }
 
+                    $this->requireProjectRole((int) $arguments['project_id'], Role::PROJECT_VIEWER);
                     $swimlanes = $this->container['swimlaneModel']->getAll($arguments['project_id']);
                     $result = array_values($swimlanes);
                     break;
@@ -897,12 +1074,11 @@ class McpServer extends Base
         try {
             switch ($uri) {
                 case 'kanboard://projects':
-                    $projects = $this->container['projectModel']->getAll();
-                    $content = json_encode(array_values($projects), JSON_PRETTY_PRINT);
+                    $content = json_encode(array_values($this->getVisibleProjects()), JSON_PRETTY_PRINT);
                     break;
                     
                 case 'kanboard://users':
-                    $users = $this->container['userModel']->getAll();
+                    $users = $this->getVisibleUsers();
                     $content = json_encode(array_values($users), JSON_PRETTY_PRINT);
                     break;
                     
@@ -1056,6 +1232,8 @@ class McpServer extends Base
                 ['arguments' => $arguments]
             );
         }
+
+        $this->requireProjectRole($projectId, Role::PROJECT_MANAGER);
 
         // 2. Verify state by comparing with existing columns
         /** @var ColumnModel $columnModel */
