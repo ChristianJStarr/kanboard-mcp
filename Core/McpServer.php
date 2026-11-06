@@ -125,7 +125,7 @@ class McpServer extends Base
                 'serverInfo' => [
                     'name'        => 'kanboard-mcp',
                     'title'       => 'Kanboard MCP Server',
-                    'version'     => '1.1.1',
+                    'version'     => '1.1.2',
                     'description' => 'Kanboard project-management tools and resources via MCP.',
                 ],
                 'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes. You can only see and modify boards you have access to.',

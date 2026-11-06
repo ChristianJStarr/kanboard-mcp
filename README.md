@@ -148,6 +148,9 @@ Every tool call is authorized against the token user's real Kanboard permissions
 
 ## Changelog
 
+### v1.1.2
+- **Integrations submit**: Generate Token posts a form rendered outside Kanboard's settings form, so the button creates a token instead of saving settings. The redirect returns to the core integrations page and does not name this plugin.
+
 ### v1.1.1
 - **Integrations form CSRF**: Token rotation accepts the reusable form token and reads the posted redirect target from the body, so the Autogenerar form works.
 - **Admin user listing**: `get_users` queries active users for `id`, `username`, and `name`. The previous lookup does not exist on Kanboard 1.2.45.

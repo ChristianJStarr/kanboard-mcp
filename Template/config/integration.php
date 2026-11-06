@@ -1,19 +1,15 @@
-<div class="panel">
+<div class="panel" id="mcp-token-panel">
     <h3><i class="fa fa-plug fa-fw"></i>&nbsp;<?= t('Model Context Protocol (MCP)') ?></h3>
     <p><?= t('Control Kanboard via Model Context Protocol. Each user has their own token that grants only their own board access.') ?></p>
 
     <?php
     // Always show the token of the session user, never the profile user.
-    $mcpUserId   = $this->task->userSession->getId();
+    // The real <form> is rendered from template:layout:bottom. Controls here
+    // only point at it, so they are not submitted with Kanboard's Save button.
+    $this->task->memoryCache->set('mcp_integration_forms', true);
+    $mcpUserId   = (int) $this->task->userSession->getId();
     $mcpToken    = $this->task->mcpTokenModel->getTokenForUser($mcpUserId);
     $baseUrl     = $this->helper->url->base();
-    $generateUrl = $this->helper->url->to(
-        'ModelContextProtocolController',
-        'generateToken',
-        ['plugin' => 'ModelContextProtocol']
-    );
-    $csrfToken = $this->task->token->getReusableCSRFToken();
-    $mcpTarget = $this->app->getRouterController() === 'UserViewController' ? 'user' : 'config';
     ?>
 
     <?php if ($mcpToken): ?>
@@ -44,15 +40,9 @@
             </p>
         </div>
 
-        <form method="post"
-              action="<?= $this->text->e($generateUrl) ?>"
-              onsubmit="return confirm('<?= t('This will invalidate the current token. Are you sure?') ?>')">
-            <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
-            <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
-            <button type="submit" class="btn btn-default">
-                <i class="fa fa-refresh fa-fw"></i>&nbsp;<?= t('Autogenerar') ?>
-            </button>
-        </form>
+        <button type="submit" form="mcp-token-form" class="btn btn-default">
+            <i class="fa fa-refresh fa-fw"></i>&nbsp;<?= t('Autogenerar') ?>
+        </button>
 
     <?php else: ?>
 
@@ -60,13 +50,9 @@
             <p><?= t('No MCP token has been generated yet. Generate a token to enable MCP access.') ?></p>
         </div>
 
-        <form method="post" action="<?= $this->text->e($generateUrl) ?>">
-            <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
-            <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
-            <button type="submit" class="btn btn-success">
-                <i class="fa fa-key fa-fw"></i>&nbsp;<?= t('Generate Token') ?>
-            </button>
-        </form>
+        <button type="submit" form="mcp-token-form" class="btn btn-success">
+            <i class="fa fa-key fa-fw"></i>&nbsp;<?= t('Generate Token') ?>
+        </button>
 
     <?php endif; ?>
 </div>
