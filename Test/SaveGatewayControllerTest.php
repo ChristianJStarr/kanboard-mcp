@@ -358,15 +358,17 @@ class SaveGatewayControllerTest extends McpTestCase
     private function integrationsUrl(string $target, int $userId): string
     {
         if ($target === 'user') {
-            return $this->container['helper']->url->to('UserViewController', 'integrations', [
-                'plugin' => 'ModelContextProtocol',
+            $url = $this->container['helper']->url->to('UserViewController', 'integrations', [
                 'user_id' => $userId,
             ]);
+        } else {
+            $url = $this->container['helper']->url->to('ConfigController', 'integrations');
         }
 
-        return $this->container['helper']->url->to('ConfigController', 'integrations', [
-            'plugin' => 'ModelContextProtocol',
-        ]);
+        $this->assertStringNotContainsString('plugin=', $url);
+        $this->assertStringNotContainsString('ModelContextProtocol', $url);
+
+        return $url;
     }
 
     /**

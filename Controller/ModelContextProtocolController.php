@@ -109,13 +109,18 @@ class ModelContextProtocolController extends BaseController
 
     /**
      * Redirect through the integrations whitelist. A posted URL is never used.
+     *
+     * Kanboard 1.2.45 UrlHelper::build() appends every parameter when
+     * Route::findUrl() misses. settings/integrations and
+     * user/:user_id/integrations are core routes, found only when plugin
+     * is omitted. plugin=ModelContextProtocol skips them and the next
+     * request looks for ConfigController inside this plugin.
      */
     private function redirectToIntegrations(string $target, int $userId): void
     {
         if ($target === 'user') {
             $this->response->redirect(
                 $this->helper->url->to('UserViewController', 'integrations', [
-                    'plugin' => 'ModelContextProtocol',
                     'user_id' => $userId,
                 ]),
                 true
@@ -124,9 +129,7 @@ class ModelContextProtocolController extends BaseController
         }
 
         $this->response->redirect(
-            $this->helper->url->to('ConfigController', 'integrations', [
-                'plugin' => 'ModelContextProtocol',
-            ]),
+            $this->helper->url->to('ConfigController', 'integrations'),
             true
         );
     }

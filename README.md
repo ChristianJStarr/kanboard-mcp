@@ -133,7 +133,7 @@ Every tool call is authorized against the token user's real Kanboard permissions
 
 Authentication identifies the user. The gateway chooses which role-allowed endpoints are on for that user's own token.
 
-The integrations page has a second form, separate from **Autogenerar**. It lists only the endpoints `allowsCapability` grants to the signed-in user. Saving stores `enabled=1` or `enabled=0` for each of those endpoints. Rows are never deleted, and regenerating a token does not remove them. An administrator viewing another profile does not see or edit that person's gateway; the form is always the session user, the same as the token panel.
+The integrations page has a second form, separate from **Autogenerar** and from Kanboard's own settings form. It lists only the endpoints `allowsCapability` grants to the signed-in user. Saving stores `enabled=1` or `enabled=0` for each of those endpoints. Rows are never deleted, and regenerating a token does not remove them. An administrator viewing another profile does not see or edit that person's gateway; the form is always the session user, the same as the token panel.
 
 - Tokens that already existed when the instance was upgraded keep their write endpoints on. The schema backfill inserts `enabled=1` for every write-class catalog endpoint for each existing `mcp_tokens` user. Read endpoints stay on without inserted rows.
 - Tokens created after the upgrade start with reads on and writes off until that user saves the form. A missing grant row means the catalog default.
@@ -171,6 +171,9 @@ A fresh app-admin token shows the read endpoints until writes are turned on. An 
 - **Methods**: POST for all MCP operations
 
 ## Changelog
+
+### v1.2.1
+- **Integrations submit**: Generate Token and Save access post forms rendered outside Kanboard's settings form, so one creates a token and the other saves grants. Both redirects return to the core integrations page and do not name this plugin.
 
 ### v1.2.0
 - **Endpoint gateway**: Each user can enable or disable the MCP endpoints their role allows. Old tokens keep writes on via the migration backfill. New tokens start with writes off.

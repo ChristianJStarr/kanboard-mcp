@@ -266,7 +266,7 @@ class McpGatewayEnforcementTest extends McpTestCase
 
         $this->assertFalse($response['result']['capabilities']['tools']['listChanged']);
         $this->assertFalse($response['result']['capabilities']['resources']['listChanged']);
-        $this->assertSame('1.2.0', $response['result']['serverInfo']['version']);
+        $this->assertSame('1.2.1', $response['result']['serverInfo']['version']);
     }
 
     /**

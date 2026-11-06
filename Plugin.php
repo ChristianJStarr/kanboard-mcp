@@ -28,6 +28,13 @@ class Plugin extends Base
             'ModelContextProtocol:config/integration'
         );
 
+        // Outside the settings/profile <form>. The partial sets a request
+        // flag; this template no-ops on every other page.
+        $this->template->hook->attach(
+            'template:layout:bottom',
+            'ModelContextProtocol:config/forms'
+        );
+
         // handle: public endpoint – no session required, token-authenticated
         $this->applicationAccessMap->add(
             'ModelContextProtocolController',
@@ -85,7 +92,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '1.2.0';
+        return '1.2.1';
     }
 
     public function getPluginHomepage()
