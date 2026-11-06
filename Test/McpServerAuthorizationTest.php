@@ -4,57 +4,10 @@ require_once __DIR__ . '/McpTestCase.php';
 
 use Kanboard\Core\Security\Role;
 use Kanboard\Model\CommentModel;
+use Kanboard\Model\TaskModel;
 
 class McpServerAuthorizationTest extends McpTestCase
 {
-    /**
-     * Today's behavior: the gateway does not filter tools/list yet.
-     *
-     * @return string[]
-     */
-    private function allToolNames(): array
-    {
-        return [
-            'get_projects',
-            'create_project',
-            'get_tasks',
-            'create_task',
-            'update_task',
-            'get_columns',
-            'move_task',
-            'get_task_details',
-            'delete_task',
-            'assign_task',
-            'set_task_due_date',
-            'add_task_comment',
-            'get_users',
-            'get_task_comments',
-            'create_column',
-            'update_column',
-            'delete_column',
-            'reorder_columns',
-            'create_category',
-            'update_category',
-            'delete_category',
-            'get_categories',
-            'create_swimlane',
-            'update_swimlane',
-            'delete_swimlane',
-            'get_swimlanes',
-        ];
-    }
-
-    public function testToolsListReturnsAll26NamesForAViewer(): void
-    {
-        $projectId = $this->createProject('Viewer list');
-        $viewerId = $this->createUser('list-viewer');
-        $this->addMember($projectId, $viewerId, Role::PROJECT_VIEWER);
-
-        $response = $this->mcpRequest($viewerId, 'tools/list');
-        $this->assertSame($this->allToolNames(), $this->toolNamesFrom($response));
-        $this->assertCount(26, $this->toolNamesFrom($response));
-    }
-
     public function testResourcesListReturnsBothUris(): void
     {
         $viewerId = $this->createUser('resource-viewer');
@@ -64,7 +17,7 @@ class McpServerAuthorizationTest extends McpTestCase
         $this->assertSame(['kanboard://projects', 'kanboard://users'], $uris);
     }
 
-    public function testViewerCreateTaskOnVisibleProjectIsForbidden(): void
+    public function testViewerCreateTaskOnVisibleProjectIsUnknown(): void
     {
         $projectId = $this->createProject('Viewer write');
         $viewerId = $this->createUser('viewer-writer');
@@ -74,7 +27,8 @@ class McpServerAuthorizationTest extends McpTestCase
             'project_id' => $projectId,
             'title' => 'Should fail',
         ]);
-        $this->assertForbiddenTool($response);
+        $this->assertUnknownTool($response, 'create_task');
+        $this->assertSame(0, (int) $this->container['db']->table(TaskModel::TABLE)->eq('project_id', $projectId)->count());
     }
 
     public function testViewerGetTasksOnHiddenProjectIsForbidden(): void
@@ -93,6 +47,7 @@ class McpServerAuthorizationTest extends McpTestCase
         $otherId = $this->createUser('other-creator');
         $this->addMember($projectId, $memberId, Role::PROJECT_MEMBER);
         $this->addMember($projectId, $otherId, Role::PROJECT_MEMBER);
+        $this->enableEndpoints($memberId, ['create_task', 'delete_task']);
 
         $created = $this->decodeToolResult($this->callTool($memberId, 'create_task', [
             'project_id' => $projectId,
@@ -125,10 +80,10 @@ class McpServerAuthorizationTest extends McpTestCase
         $memberId = $this->createUser('column-member');
         $this->addMember($projectId, $memberId, Role::PROJECT_MEMBER);
 
-        $this->assertForbiddenTool($this->callTool($memberId, 'create_column', [
+        $this->assertUnknownTool($this->callTool($memberId, 'create_column', [
             'project_id' => $projectId,
             'title' => 'Extra',
-        ]));
+        ]), 'create_column');
     }
 
     public function testManagerCanCreateColumn(): void
@@ -136,6 +91,7 @@ class McpServerAuthorizationTest extends McpTestCase
         $projectId = $this->createProject('Manager columns');
         $managerId = $this->createUser('column-manager');
         $this->addMember($projectId, $managerId, Role::PROJECT_MANAGER);
+        $this->enableEndpoints($managerId, ['create_column']);
 
         $created = $this->decodeToolResult($this->callTool($managerId, 'create_column', [
             'project_id' => $projectId,
@@ -147,19 +103,22 @@ class McpServerAuthorizationTest extends McpTestCase
     public function testAppUserCannotCreateProject(): void
     {
         $userId = $this->createUser('plain-app-user', Role::APP_USER);
-        $this->assertForbiddenTool($this->callTool($userId, 'create_project', [
+        $this->assertUnknownTool($this->callTool($userId, 'create_project', [
             'name' => 'Not allowed',
-        ]));
+        ]), 'create_project');
+        $this->assertNull($this->container['projectModel']->getByName('Not allowed'));
     }
 
     public function testAppAdminAndAppManagerCanCreateProject(): void
     {
+        $this->enableEndpoints($this->adminId(), ['create_project']);
         $admin = $this->decodeToolResult($this->callTool($this->adminId(), 'create_project', [
             'name' => 'Admin project',
         ]));
         $this->assertGreaterThan(0, (int) $admin['project_id']);
 
         $managerId = $this->createUser('app-manager-create', Role::APP_MANAGER);
+        $this->enableEndpoints($managerId, ['create_project']);
         $manager = $this->decodeToolResult($this->callTool($managerId, 'create_project', [
             'name' => 'Manager project',
         ]));
@@ -219,9 +178,12 @@ class McpServerAuthorizationTest extends McpTestCase
         $viewerId = $this->createUser('forbidden-shape');
         $this->addMember($projectId, $viewerId, Role::PROJECT_VIEWER);
 
-        $response = $this->callTool($viewerId, 'create_task', [
+        $allowed = $this->gateway()->allowedNames($this->accessFor($viewerId));
+        $posted = array_values(array_diff($allowed, ['get_tasks']));
+        $this->gateway()->save($viewerId, $allowed, $posted);
+
+        $response = $this->callTool($viewerId, 'get_tasks', [
             'project_id' => $projectId,
-            'title' => 'Nope',
         ]);
         $this->assertSame('2.0', $response['jsonrpc']);
         $this->assertArrayNotHasKey('error', $response);
@@ -233,6 +195,7 @@ class McpServerAuthorizationTest extends McpTestCase
         $projectId = $this->createProject('Comments');
         $memberId = $this->createUser('comment-member');
         $this->addMember($projectId, $memberId, Role::PROJECT_MEMBER);
+        $this->enableEndpoints($memberId, ['add_task_comment']);
         $this->login($this->adminId());
 
         $taskId = (int) $this->container['taskCreationModel']->create([
@@ -259,9 +222,9 @@ class McpServerAuthorizationTest extends McpTestCase
         $this->addMember($visible, $viewerId, Role::PROJECT_VIEWER);
         $this->login($this->adminId());
 
-        $this->assertForbiddenTool($this->callTool($viewerId, 'create_project', [
+        $this->assertUnknownTool($this->callTool($viewerId, 'create_project', [
             'name' => 'Should not exist',
-        ]));
+        ]), 'create_project');
         $this->assertForbiddenTool($this->callTool($viewerId, 'get_tasks', [
             'project_id' => $hidden,
         ]));

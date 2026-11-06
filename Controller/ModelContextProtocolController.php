@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Controller\BaseController;
+use Kanboard\Core\Controller\AccessForbiddenException;
+use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -127,6 +129,110 @@ class ModelContextProtocolController extends BaseController
             ]),
             true
         );
+    }
+
+    /**
+     * Save the session user's endpoint toggles.
+     *
+     * A hidden gateway_save flag is required. The posted list is validated
+     * before any write. user_id never selects another account.
+     */
+    public function saveGateway(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        $userId = (int) $this->userSession->getId();
+        $form = $this->request->getRawFormValues();
+        $this->rejectForeignUserId($userId, $form);
+
+        $target = isset($form['target']) && is_string($form['target']) ? $form['target'] : '';
+
+        if (!isset($form['gateway_save']) || !is_string($form['gateway_save']) || $form['gateway_save'] !== '1') {
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $posted = [];
+        if (array_key_exists('endpoints', $form)) {
+            $posted = $this->flatStringList($form['endpoints']);
+            if ($posted === null) {
+                $this->flash->failure(t('Could not save MCP access'));
+                $this->redirectToIntegrations($target, $userId);
+                return;
+            }
+        }
+
+        $allowed = $this->mcpEndpointGatewayModel->allowedNames(new McpAccess($this->container, $userId));
+
+        try {
+            $this->mcpEndpointGatewayModel->save($userId, $allowed, $posted);
+        } catch (Throwable $exception) {
+            $this->flash->failure(t('Could not save MCP access'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $this->flash->success(t('MCP access saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
+     * Query-string and raw POST user_id must be absent or this session user.
+     *
+     * @param array<string,mixed> $form
+     */
+    private function rejectForeignUserId(int $userId, array $form): void
+    {
+        if (array_key_exists('user_id', $form) && !$this->isSameUserId($form['user_id'], $userId)) {
+            throw new AccessForbiddenException();
+        }
+
+        if (array_key_exists('user_id', $_GET) && !$this->isSameUserId($_GET['user_id'], $userId)) {
+            throw new AccessForbiddenException();
+        }
+    }
+
+    private function isSameUserId(mixed $value, int $userId): bool
+    {
+        if (is_int($value)) {
+            return $value === $userId;
+        }
+
+        if (is_string($value)) {
+            return $value === (string) $userId;
+        }
+
+        return false;
+    }
+
+    /**
+     * A JSON/form list of strings, or null when the shape is not that list.
+     *
+     * @param mixed $value
+     * @return string[]|null
+     */
+    private function flatStringList(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+
+        $names = [];
+        $expected = 0;
+        foreach ($value as $key => $item) {
+            if ($key !== $expected || !is_string($item)) {
+                return null;
+            }
+            $names[] = $item;
+            $expected++;
+        }
+
+        return $names;
     }
 
     // -----------------------------------------------------------------------

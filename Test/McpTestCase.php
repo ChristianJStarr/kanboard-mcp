@@ -2,7 +2,10 @@
 
 use Kanboard\Core\Plugin\SchemaHandler;
 use Kanboard\Core\Security\Role;
+use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
+use Kanboard\Plugin\ModelContextProtocol\Core\McpCatalog;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpEndpointGatewayModel;
 use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
 
 abstract class McpTestCase extends Base
@@ -28,6 +31,55 @@ abstract class McpTestCase extends Base
         $this->container['mcpTokenModel'] = function ($c) {
             return new McpTokenModel($c);
         };
+        $this->container['mcpEndpointGatewayModel'] = function ($c) {
+            return new McpEndpointGatewayModel($c);
+        };
+    }
+
+    protected function gateway(): McpEndpointGatewayModel
+    {
+        return $this->container['mcpEndpointGatewayModel'];
+    }
+
+    /**
+     * Upsert the given catalog names to enabled=1. Other rows are left alone.
+     *
+     * @param string[] $names
+     */
+    protected function enableEndpoints(int $userId, array $names): void
+    {
+        $this->gateway()->save($userId, $names, $names);
+    }
+
+    protected function insertGrant(int $userId, string $endpoint, int $enabled): void
+    {
+        $this->assertTrue($this->container['db']->table(McpEndpointGatewayModel::TABLE)->insert([
+            'user_id' => $userId,
+            'endpoint' => $endpoint,
+            'enabled' => $enabled,
+        ]));
+    }
+
+    protected function enableEveryCatalogEndpoint(int $userId): void
+    {
+        foreach (McpCatalog::ENDPOINTS as $endpoint) {
+            $this->insertGrant($userId, $endpoint['name'], 1);
+        }
+    }
+
+    /**
+     * @return array<int,array<string,mixed>>
+     */
+    protected function grantRows(int $userId): array
+    {
+        return $this->container['db']->table(McpEndpointGatewayModel::TABLE)
+            ->eq('user_id', $userId)
+            ->findAll();
+    }
+
+    protected function accessFor(int $userId): McpAccess
+    {
+        return new McpAccess($this->container, $userId);
     }
 
     protected function createUser(string $username, string $role = Role::APP_USER, string $name = ''): int

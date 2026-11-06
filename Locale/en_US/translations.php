@@ -17,4 +17,15 @@ return [
     'No MCP token has been generated yet. Generate a token to enable MCP access.'                                        => 'No MCP token has been generated yet. Generate a token to enable MCP access.',
     'New MCP token generated successfully'                                                                               => 'New MCP token generated successfully',
     'Unable to generate MCP token'                                                                                       => 'Unable to generate MCP token',
+
+    // Endpoint gateway
+    'MCP access'                                                                                                         => 'MCP access',
+    'Enable or disable each MCP endpoint for your own token. Only endpoints your role allows are shown. A disabled endpoint cannot be called.' => 'Enable or disable each MCP endpoint for your own token. Only endpoints your role allows are shown. A disabled endpoint cannot be called.',
+    'Save access'                                                                                                        => 'Save access',
+    'MCP access saved'                                                                                                   => 'MCP access saved',
+    'Could not save MCP access'                                                                                          => 'Could not save MCP access',
+    'Read'                                                                                                               => 'Read',
+    'Task changes'                                                                                                       => 'Task changes',
+    'Board setup'                                                                                                        => 'Board setup',
+    'Projects'                                                                                                           => 'Projects',
 ];
