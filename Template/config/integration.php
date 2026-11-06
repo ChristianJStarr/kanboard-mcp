@@ -13,6 +13,7 @@
         ['plugin' => 'ModelContextProtocol']
     );
     $csrfToken = $this->task->token->getReusableCSRFToken();
+    $mcpTarget = $this->app->getRouterController() === 'UserViewController' ? 'user' : 'config';
     ?>
 
     <?php if ($mcpToken): ?>
@@ -47,6 +48,7 @@
               action="<?= $this->text->e($generateUrl) ?>"
               onsubmit="return confirm('<?= t('This will invalidate the current token. Are you sure?') ?>')">
             <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
+            <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
             <button type="submit" class="btn btn-default">
                 <i class="fa fa-refresh fa-fw"></i>&nbsp;<?= t('Autogenerar') ?>
             </button>
@@ -60,6 +62,7 @@
 
         <form method="post" action="<?= $this->text->e($generateUrl) ?>">
             <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
+            <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
             <button type="submit" class="btn btn-success">
                 <i class="fa fa-key fa-fw"></i>&nbsp;<?= t('Generate Token') ?>
             </button>

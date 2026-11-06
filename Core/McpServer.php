@@ -125,7 +125,7 @@ class McpServer extends Base
                 'serverInfo' => [
                     'name'        => 'kanboard-mcp',
                     'title'       => 'Kanboard MCP Server',
-                    'version'     => '1.1.0',
+                    'version'     => '1.1.1',
                     'description' => 'Kanboard project-management tools and resources via MCP.',
                 ],
                 'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes. You can only see and modify boards you have access to.',
@@ -1122,7 +1122,11 @@ class McpServer extends Base
         $safe = [];
 
         if ($this->access->isAppAdmin()) {
-            $rows = $this->container['userModel']->getActiveUsers();
+            $rows = $this->container['userModel']
+                ->getQuery()
+                ->eq('is_active', 1)
+                ->columns('id', 'username', 'name')
+                ->findAll();
             foreach ($rows as $row) {
                 $safe[(int) $row['id']] = [
                     'id'       => (int)    $row['id'],

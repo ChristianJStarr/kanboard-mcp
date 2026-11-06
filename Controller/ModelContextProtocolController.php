@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
-use Kanboard\Core\Base;
+use Kanboard\Controller\BaseController;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -12,7 +12,7 @@ use Throwable;
  *
  * @package  Kanboard\Plugin\ModelContextProtocol\Controller
  */
-class ModelContextProtocolController extends Base
+class ModelContextProtocolController extends BaseController
 {
     /**
      * @var array<int,string>
@@ -84,8 +84,8 @@ class ModelContextProtocolController extends Base
     /**
      * Regenerate the MCP token for the currently logged-in user.
      *
-     * Requires APP_USER role and a POST request with a CSRF token in the body.
-     * Bound to session user only — never rotates another user's token.
+     * Requires APP_USER role and a POST body with the reusable CSRF token.
+     * Bound to the session user only — a posted user_id never selects the account.
      */
     public function generateToken(): void
     {
@@ -94,15 +94,22 @@ class ModelContextProtocolController extends Base
             return;
         }
 
-        $this->checkCSRFParam();
+        $this->checkReusableCSRFParam();
 
         $userId = $this->userSession->getId();
 
         $this->mcpTokenModel->regenerateForUser($userId);
         $this->flash->success(t('New MCP token generated successfully'));
 
-        $target = $this->request->getStringParam('target', 'config');
+        $target = $this->request->getRawValue('target');
+        $this->redirectToIntegrations(is_string($target) ? $target : '', $userId);
+    }
 
+    /**
+     * Redirect through the integrations whitelist. A posted URL is never used.
+     */
+    private function redirectToIntegrations(string $target, int $userId): void
+    {
         if ($target === 'user') {
             $this->response->redirect(
                 $this->helper->url->to('UserViewController', 'integrations', [
@@ -111,14 +118,15 @@ class ModelContextProtocolController extends Base
                 ]),
                 true
             );
-        } else {
-            $this->response->redirect(
-                $this->helper->url->to('ConfigController', 'integrations', [
-                    'plugin' => 'ModelContextProtocol',
-                ]),
-                true
-            );
+            return;
         }
+
+        $this->response->redirect(
+            $this->helper->url->to('ConfigController', 'integrations', [
+                'plugin' => 'ModelContextProtocol',
+            ]),
+            true
+        );
     }
 
     // -----------------------------------------------------------------------

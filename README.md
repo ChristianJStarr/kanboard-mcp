@@ -148,6 +148,10 @@ Every tool call is authorized against the token user's real Kanboard permissions
 
 ## Changelog
 
+### v1.1.1
+- **Integrations form CSRF**: Token rotation accepts the reusable form token and reads the posted redirect target from the body, so the Autogenerar form works.
+- **Admin user listing**: `get_users` queries active users for `id`, `username`, and `name`. The previous lookup does not exist on Kanboard 1.2.45.
+
 ### v1.1.0
 - **Per-user tokens**: Each user now has their own MCP token scoped to their boards and role.
 - **Autogenerar button**: Token rotation available to every user from Settings → Integrations or their profile.
