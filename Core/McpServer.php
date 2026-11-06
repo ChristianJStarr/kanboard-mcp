@@ -12,16 +12,16 @@ use Traversable;
 
 /**
  * MCP Server for Kanboard
- * Implements Model Context Protocol JSON-RPC 2.0 specification
- * Provides comprehensive project management tools for AI assistants
+ *
+ * Implements Model Context Protocol JSON-RPC 2.0 specification.
+ * Every tool and resource is scoped to the authenticated user supplied via
+ * $userId; no global data is ever returned.
  */
 class McpServer extends Base
 {
     private const LATEST_PROTOCOL_VERSION = '2025-11-25';
 
     /**
-     * Maintained for compatibility with clients that still negotiate older revisions.
-     *
      * @var array<int,string>
      */
     private const SUPPORTED_PROTOCOL_VERSIONS = [
@@ -31,33 +31,39 @@ class McpServer extends Base
         '2024-11-05',
     ];
 
-    public function __construct($container)
+    private int $userId;
+    private McpAccess $access;
+
+    public function __construct($container, int $userId)
     {
         $this->container = $container;
+        $this->userId    = $userId;
+        $this->access    = new McpAccess($container, $userId);
     }
-    
-    /**
-     * Handle MCP JSON-RPC request
-     */
+
+    // -----------------------------------------------------------------------
+    // Dispatch
+    // -----------------------------------------------------------------------
+
     public function handleRequest(array $request): ?array
     {
         if (!isset($request['jsonrpc']) || $request['jsonrpc'] !== '2.0') {
-            return $this->errorResponse(-32600, 'Invalid Request', isset($request['id']) ? $request['id'] : null);
+            return $this->errorResponse(-32600, 'Invalid Request', $request['id'] ?? null);
         }
-        
+
         if (isset($request['params']) && !is_array($request['params'])) {
-            return $this->errorResponse(-32602, 'Invalid params', isset($request['id']) ? $request['id'] : null);
+            return $this->errorResponse(-32602, 'Invalid params', $request['id'] ?? null);
         }
 
         $method = isset($request['method']) && is_string($request['method']) ? $request['method'] : '';
         $params = $request['params'] ?? [];
-        $id = $request['id'] ?? null;
-        
+        $id     = $request['id'] ?? null;
+
         try {
             switch ($method) {
                 case 'initialize':
                     return $this->initialize($params, $id);
-                    
+
                 case 'notifications/initialized':
                 case 'initialized':
                     return $this->initialized();
@@ -76,14 +82,14 @@ class McpServer extends Base
 
                 case 'resources/read':
                     return $this->readResource($params, $id);
-                
+
                 case 'ListOfferings':
                 case 'listOfferings':
                     return $this->listOfferings($id);
-                
+
                 case 'ping':
                     return $this->ping($id);
-                    
+
                 default:
                     return $this->errorResponse(-32601, 'Method not found: ' . $method, $id);
             }
@@ -92,61 +98,50 @@ class McpServer extends Base
             return $this->errorResponse(-32603, 'Internal error', $id);
         }
     }
-    
-    /**
-     * Initialize MCP server
-     */
+
+    // -----------------------------------------------------------------------
+    // Protocol
+    // -----------------------------------------------------------------------
+
     private function initialize(array $params, int|string|null $id): array
     {
-        try {
-            $requestedVersion = isset($params['protocolVersion']) && is_string($params['protocolVersion'])
-                ? $params['protocolVersion']
-                : null;
+        $requestedVersion = isset($params['protocolVersion']) && is_string($params['protocolVersion'])
+            ? $params['protocolVersion']
+            : null;
 
-            $negotiatedVersion = in_array($requestedVersion, self::SUPPORTED_PROTOCOL_VERSIONS, true)
-                ? $requestedVersion
-                : self::LATEST_PROTOCOL_VERSION;
+        $negotiatedVersion = in_array($requestedVersion, self::SUPPORTED_PROTOCOL_VERSIONS, true)
+            ? $requestedVersion
+            : self::LATEST_PROTOCOL_VERSION;
 
-            return [
-                'jsonrpc' => '2.0',
-                'id' => $id,
-                'result' => [
-                    'protocolVersion' => $negotiatedVersion,
-                    'capabilities' => [
-                        'tools' => [
-                            'listChanged' => false,
-                        ],
-                        'resources' => [
-                            'listChanged' => false,
-                        ],
-                    ],
-                    'serverInfo' => [
-                        'name' => 'kanboard-mcp',
-                        'title' => 'Kanboard MCP Server',
-                        'version' => '1.0.0',
-                        'description' => 'Kanboard project-management tools and resources via MCP.',
-                    ],
-                    'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes.',
-                ]
-            ];
-        } catch (Throwable $exception) {
-            $this->logThrowable('Initialize failed', $exception);
-            return $this->errorResponse(-32603, 'Initialize failed', $id);
-        }
+        return [
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'result'  => [
+                'protocolVersion' => $negotiatedVersion,
+                'capabilities'    => [
+                    'tools'     => ['listChanged' => false],
+                    'resources' => ['listChanged' => false],
+                ],
+                'serverInfo' => [
+                    'name'        => 'kanboard-mcp',
+                    'title'       => 'Kanboard MCP Server',
+                    'version'     => '1.1.0',
+                    'description' => 'Kanboard project-management tools and resources via MCP.',
+                ],
+                'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes. You can only see and modify boards you have access to.',
+            ],
+        ];
     }
-    
-    /**
-     * Handle initialized notification
-     */
+
     private function initialized(): ?array
     {
-        // This is a notification, so we don't return a response
         return null;
     }
-    
-    /**
-     * List available tools
-     */
+
+    // -----------------------------------------------------------------------
+    // Tool list
+    // -----------------------------------------------------------------------
+
     private function listTools(array $params, int|string|null $id): array
     {
         $cursor = $params['cursor'] ?? null;
@@ -156,337 +151,314 @@ class McpServer extends Base
 
         $tools = [
             [
-                'name' => 'get_projects',
-                'description' => 'Get all projects',
-                'inputSchema' => [
-                    'type' => 'object',
-                    'additionalProperties' => false,
-                ]
+                'name'        => 'get_projects',
+                'description' => 'Get all projects visible to you',
+                'inputSchema' => ['type' => 'object', 'additionalProperties' => false],
             ],
             [
-                'name' => 'create_project',
-                'description' => 'Create a new project',
+                'name'        => 'create_project',
+                'description' => 'Create a new project (requires app-admin or app-manager role)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'name' => ['type' => 'string', 'description' => 'Project name'],
-                        'description' => ['type' => 'string', 'description' => 'Project description']
+                        'name'        => ['type' => 'string', 'description' => 'Project name'],
+                        'description' => ['type' => 'string', 'description' => 'Project description'],
                     ],
-                    'required' => ['name']
-                ]
+                    'required' => ['name'],
+                ],
             ],
             [
-                'name' => 'get_tasks',
+                'name'        => 'get_tasks',
                 'description' => 'Get tasks from a project',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'status_id' => [
-                            'type' => 'integer',
+                        'status_id'  => [
+                            'type'        => 'integer',
                             'description' => 'Status ID (1 for active, 0 for archived)',
-                            'enum' => [TaskModel::STATUS_CLOSED, TaskModel::STATUS_OPEN],
-                            'default' => TaskModel::STATUS_OPEN
-                        ]
+                            'enum'        => [TaskModel::STATUS_CLOSED, TaskModel::STATUS_OPEN],
+                            'default'     => TaskModel::STATUS_OPEN,
+                        ],
                     ],
-                    'required' => ['project_id']
-                ]
+                    'required' => ['project_id'],
+                ],
             ],
             [
-                'name' => 'create_task',
+                'name'        => 'create_task',
                 'description' => 'Create a new task',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'title' => ['type' => 'string', 'description' => 'Task title'],
-                        'description' => ['type' => 'string', 'description' => 'Task description'],
-                        'column_id' => ['type' => 'integer', 'description' => 'Column ID']
+                        'project_id'  => ['type' => 'integer', 'description' => 'Project ID'],
+                        'title'       => ['type' => 'string',  'description' => 'Task title'],
+                        'description' => ['type' => 'string',  'description' => 'Task description'],
+                        'column_id'   => ['type' => 'integer', 'description' => 'Column ID'],
                     ],
-                    'required' => ['project_id', 'title']
-                ]
+                    'required' => ['project_id', 'title'],
+                ],
             ],
             [
-                'name' => 'update_task',
+                'name'        => 'update_task',
                 'description' => 'Update an existing task',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
-                        'title' => ['type' => 'string', 'description' => 'Task title'],
-                        'description' => ['type' => 'string', 'description' => 'Task description'],
-                        'column_id' => ['type' => 'integer', 'description' => 'Column ID']
+                        'task_id'     => ['type' => 'integer', 'description' => 'Task ID'],
+                        'title'       => ['type' => 'string',  'description' => 'Task title'],
+                        'description' => ['type' => 'string',  'description' => 'Task description'],
+                        'column_id'   => ['type' => 'integer', 'description' => 'Column ID'],
                     ],
-                    'required' => ['task_id']
-                ]
+                    'required' => ['task_id'],
+                ],
             ],
             [
-                'name' => 'get_columns',
+                'name'        => 'get_columns',
                 'description' => 'Get columns for a project',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID']
-                    ],
-                    'required' => ['project_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['project_id' => ['type' => 'integer', 'description' => 'Project ID']],
+                    'required'   => ['project_id'],
+                ],
             ],
             [
-                'name' => 'move_task',
+                'name'        => 'move_task',
                 'description' => 'Move a task to a different column',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
-                        'column_id' => ['type' => 'integer', 'description' => 'Target column ID']
+                        'task_id'    => ['type' => 'integer', 'description' => 'Task ID'],
+                        'column_id'  => ['type' => 'integer', 'description' => 'Target column ID'],
                     ],
-                    'required' => ['project_id', 'task_id', 'column_id']
-                ]
+                    'required' => ['project_id', 'task_id', 'column_id'],
+                ],
             ],
             [
-                'name' => 'get_task_details',
+                'name'        => 'get_task_details',
                 'description' => 'Get detailed information about a specific task',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID']
-                    ],
-                    'required' => ['task_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['task_id' => ['type' => 'integer', 'description' => 'Task ID']],
+                    'required'   => ['task_id'],
+                ],
             ],
             [
-                'name' => 'delete_task',
-                'description' => 'Delete a task',
+                'name'        => 'delete_task',
+                'description' => 'Delete a task (managers can delete any task; members can only delete their own)',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID']
-                    ],
-                    'required' => ['task_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['task_id' => ['type' => 'integer', 'description' => 'Task ID']],
+                    'required'   => ['task_id'],
+                ],
             ],
             [
-                'name' => 'assign_task',
+                'name'        => 'assign_task',
                 'description' => 'Assign a task to a user',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
-                        'user_id' => ['type' => 'integer', 'description' => 'User ID']
+                        'user_id' => ['type' => 'integer', 'description' => 'User ID'],
                     ],
-                    'required' => ['task_id', 'user_id']
-                ]
+                    'required' => ['task_id', 'user_id'],
+                ],
             ],
             [
-                'name' => 'set_task_due_date',
+                'name'        => 'set_task_due_date',
                 'description' => 'Set due date for a task',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
-                        'due_date' => ['type' => 'string', 'description' => 'Due date in YYYY-MM-DD format']
+                        'task_id'  => ['type' => 'integer', 'description' => 'Task ID'],
+                        'due_date' => ['type' => 'string',  'description' => 'Due date in YYYY-MM-DD format'],
                     ],
-                    'required' => ['task_id', 'due_date']
-                ]
+                    'required' => ['task_id', 'due_date'],
+                ],
             ],
             [
-                'name' => 'add_task_comment',
+                'name'        => 'add_task_comment',
                 'description' => 'Add a comment to a task',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'task_id' => ['type' => 'integer', 'description' => 'Task ID'],
-                        'comment' => ['type' => 'string', 'description' => 'Comment text']
+                        'comment' => ['type' => 'string',  'description' => 'Comment text'],
                     ],
-                    'required' => ['task_id', 'comment']
-                ]
+                    'required' => ['task_id', 'comment'],
+                ],
             ],
             [
-                'name' => 'get_users',
-                'description' => 'Get all users in the system',
-                'inputSchema' => [
-                    'type' => 'object',
-                    'additionalProperties' => false,
-                ]
+                'name'        => 'get_users',
+                'description' => 'Get users (returns id, username, name only). Admins see all active users; others see members of their visible projects.',
+                'inputSchema' => ['type' => 'object', 'additionalProperties' => false],
             ],
             [
-                'name' => 'get_task_comments',
+                'name'        => 'get_task_comments',
                 'description' => 'Get all comments for a task',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'task_id' => ['type' => 'integer', 'description' => 'Task ID']
-                    ],
-                    'required' => ['task_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['task_id' => ['type' => 'integer', 'description' => 'Task ID']],
+                    'required'   => ['task_id'],
+                ],
             ],
-            // Administrative Tools - Column Management
+            // Column management (project manager only)
             [
-                'name' => 'create_column',
-                'description' => 'Add new columns to projects',
+                'name'        => 'create_column',
+                'description' => 'Add a new column to a project (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'title' => ['type' => 'string', 'description' => 'Column title'],
-                        'task_limit' => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
-                        'description' => ['type' => 'string', 'description' => 'Column description']
+                        'project_id'  => ['type' => 'integer', 'description' => 'Project ID'],
+                        'title'       => ['type' => 'string',  'description' => 'Column title'],
+                        'task_limit'  => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
+                        'description' => ['type' => 'string',  'description' => 'Column description'],
                     ],
-                    'required' => ['project_id', 'title']
-                ]
+                    'required' => ['project_id', 'title'],
+                ],
             ],
             [
-                'name' => 'update_column',
-                'description' => 'Modify column settings',
+                'name'        => 'update_column',
+                'description' => 'Modify column settings (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'column_id' => ['type' => 'integer', 'description' => 'Column ID'],
-                        'title' => ['type' => 'string', 'description' => 'Column title'],
-                        'task_limit' => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
-                        'description' => ['type' => 'string', 'description' => 'Column description'],
-                        'hide_in_dashboard' => ['type' => 'integer', 'description' => '1 to hide from dashboard, 0 to show']
+                        'column_id'       => ['type' => 'integer', 'description' => 'Column ID'],
+                        'title'           => ['type' => 'string',  'description' => 'Column title'],
+                        'task_limit'      => ['type' => 'integer', 'description' => 'Task limit (0 for unlimited)'],
+                        'description'     => ['type' => 'string',  'description' => 'Column description'],
+                        'hide_in_dashboard' => ['type' => 'integer', 'description' => '1 to hide from dashboard, 0 to show'],
                     ],
-                    'required' => ['column_id']
-                ]
+                    'required' => ['column_id'],
+                ],
             ],
             [
-                'name' => 'delete_column',
-                'description' => 'Remove columns',
+                'name'        => 'delete_column',
+                'description' => 'Remove a column (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'column_id' => ['type' => 'integer', 'description' => 'Column ID']
-                    ],
-                    'required' => ['column_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['column_id' => ['type' => 'integer', 'description' => 'Column ID']],
+                    'required'   => ['column_id'],
+                ],
             ],
             [
-                'name' => 'reorder_columns',
-                'description' => 'Change column positions',
+                'name'        => 'reorder_columns',
+                'description' => 'Change column positions (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'column_ids' => ['type' => 'array', 'description' => 'Array of column IDs in desired order']
+                        'column_ids' => ['type' => 'array',   'description' => 'Array of column IDs in desired order'],
                     ],
-                    'required' => ['project_id', 'column_ids']
-                ]
+                    'required' => ['project_id', 'column_ids'],
+                ],
             ],
-            // Administrative Tools - Category Management
+            // Category management (project manager only)
             [
-                'name' => 'create_category',
-                'description' => 'Add task categories',
+                'name'        => 'create_category',
+                'description' => 'Add a task category (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'name' => ['type' => 'string', 'description' => 'Category name'],
-                        'description' => ['type' => 'string', 'description' => 'Category description']
+                        'project_id'  => ['type' => 'integer', 'description' => 'Project ID'],
+                        'name'        => ['type' => 'string',  'description' => 'Category name'],
+                        'description' => ['type' => 'string',  'description' => 'Category description'],
                     ],
-                    'required' => ['project_id', 'name']
-                ]
+                    'required' => ['project_id', 'name'],
+                ],
             ],
             [
-                'name' => 'update_category',
-                'description' => 'Modify categories',
+                'name'        => 'update_category',
+                'description' => 'Modify a category (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'category_id' => ['type' => 'integer', 'description' => 'Category ID'],
-                        'name' => ['type' => 'string', 'description' => 'Category name'],
-                        'description' => ['type' => 'string', 'description' => 'Category description']
+                        'name'        => ['type' => 'string',  'description' => 'Category name'],
+                        'description' => ['type' => 'string',  'description' => 'Category description'],
                     ],
-                    'required' => ['category_id']
-                ]
+                    'required' => ['category_id'],
+                ],
             ],
             [
-                'name' => 'delete_category',
-                'description' => 'Remove categories',
+                'name'        => 'delete_category',
+                'description' => 'Remove a category (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'category_id' => ['type' => 'integer', 'description' => 'Category ID']
-                    ],
-                    'required' => ['category_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['category_id' => ['type' => 'integer', 'description' => 'Category ID']],
+                    'required'   => ['category_id'],
+                ],
             ],
             [
-                'name' => 'get_categories',
+                'name'        => 'get_categories',
                 'description' => 'List project categories',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID']
-                    ],
-                    'required' => ['project_id']
-                ]
+                    'type'       => 'object',
+                    'properties' => ['project_id' => ['type' => 'integer', 'description' => 'Project ID']],
+                    'required'   => ['project_id'],
+                ],
             ],
-            // Administrative Tools - Swimlane Management
+            // Swimlane management (project manager only)
             [
-                'name' => 'create_swimlane',
-                'description' => 'Add swimlanes',
+                'name'        => 'create_swimlane',
+                'description' => 'Add a swimlane (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'name' => ['type' => 'string', 'description' => 'Swimlane name'],
-                        'description' => ['type' => 'string', 'description' => 'Swimlane description']
+                        'project_id'  => ['type' => 'integer', 'description' => 'Project ID'],
+                        'name'        => ['type' => 'string',  'description' => 'Swimlane name'],
+                        'description' => ['type' => 'string',  'description' => 'Swimlane description'],
                     ],
-                    'required' => ['project_id', 'name']
-                ]
+                    'required' => ['project_id', 'name'],
+                ],
             ],
             [
-                'name' => 'update_swimlane',
-                'description' => 'Modify swimlanes',
+                'name'        => 'update_swimlane',
+                'description' => 'Modify a swimlane (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
                         'swimlane_id' => ['type' => 'integer', 'description' => 'Swimlane ID'],
-                        'name' => ['type' => 'string', 'description' => 'Swimlane name'],
-                        'description' => ['type' => 'string', 'description' => 'Swimlane description']
+                        'name'        => ['type' => 'string',  'description' => 'Swimlane name'],
+                        'description' => ['type' => 'string',  'description' => 'Swimlane description'],
                     ],
-                    'required' => ['swimlane_id']
-                ]
+                    'required' => ['swimlane_id'],
+                ],
             ],
             [
-                'name' => 'delete_swimlane',
-                'description' => 'Remove swimlanes',
+                'name'        => 'delete_swimlane',
+                'description' => 'Remove a swimlane (project manager only)',
                 'inputSchema' => [
-                    'type' => 'object',
+                    'type'       => 'object',
                     'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID'],
-                        'swimlane_id' => ['type' => 'integer', 'description' => 'Swimlane ID']
+                        'project_id'  => ['type' => 'integer', 'description' => 'Project ID'],
+                        'swimlane_id' => ['type' => 'integer', 'description' => 'Swimlane ID'],
                     ],
-                    'required' => ['project_id', 'swimlane_id']
-                ]
+                    'required' => ['project_id', 'swimlane_id'],
+                ],
             ],
             [
-                'name' => 'get_swimlanes',
+                'name'        => 'get_swimlanes',
                 'description' => 'List project swimlanes',
                 'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'project_id' => ['type' => 'integer', 'description' => 'Project ID']
-                    ],
-                    'required' => ['project_id']
-                ]
-            ]
+                    'type'       => 'object',
+                    'properties' => ['project_id' => ['type' => 'integer', 'description' => 'Project ID']],
+                    'required'   => ['project_id'],
+                ],
+            ],
         ];
-        
+
         return [
             'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
-                'tools' => $tools
-            ]
+            'id'      => $id,
+            'result'  => ['tools' => $tools],
         ];
     }
-    
-    /**
-     * Call a tool
-     */
+
+    // -----------------------------------------------------------------------
+    // Tool dispatch
+    // -----------------------------------------------------------------------
+
     private function callTool(array $params, int|string|null $id): array
     {
         if (!isset($params['name']) || !is_string($params['name']) || trim($params['name']) === '') {
@@ -497,337 +469,11 @@ class McpServer extends Base
             return $this->errorResponse(-32602, 'Invalid params: arguments must be an object', $id);
         }
 
-        $toolName = $params['name'] ?? '';
+        $toolName  = $params['name'];
         $arguments = $params['arguments'] ?? [];
 
         try {
-            $result = null;
-            
-            switch ($toolName) {
-                case 'get_projects':
-                    $projects = $this->container['projectModel']->getAll();
-                    $result = array_values($projects);
-                    break;
-                    
-                case 'create_project':
-                    if (!isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
-                    }
-
-                    $projectId = $this->container['projectModel']->create([
-                        'name' => trim($arguments['name']),
-                        'description' => $arguments['description'] ?? ''
-                    ]);
-                    $result = ['project_id' => $projectId];
-                    break;
-                    
-                case 'get_tasks':
-                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : null;
-                    $statusId = array_key_exists('status_id', $arguments)
-                        ? (int) $arguments['status_id']
-                        : TaskModel::STATUS_OPEN;
-
-                    if ($projectId === null || $projectId <= 0 || !in_array(
-                        $statusId,
-                        [TaskModel::STATUS_OPEN, TaskModel::STATUS_CLOSED],
-                        true
-                    )) {
-                        return $this->createToolExecutionErrorResponse(
-                            'Invalid arguments: project_id and status_id must be integers (status_id in [0,1])',
-                            $id
-                        );
-                    }
-
-                    try {
-                        $tasks = $this->container['taskFinderModel']->getAll($projectId, $statusId);
-                        $result = array_values($tasks);
-                    } catch (Throwable $exception) {
-                        $this->logThrowable('Failed to get tasks', $exception);
-                        return $this->createToolExecutionErrorResponse('Failed to get tasks', $id);
-                    }
-                    break;
-
-                case 'create_task':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
-                    }
-
-                    if (!isset($arguments['title']) || !is_string($arguments['title']) || trim($arguments['title']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
-                    }
-
-                    $taskData = [
-                        'project_id' => (int) $arguments['project_id'],
-                        'title' => trim($arguments['title']),
-                        'description' => $arguments['description'] ?? ''
-                    ];
-                    if (isset($arguments['column_id'])) {
-                        $taskData['column_id'] = (int) $arguments['column_id'];
-                    }
-                    $taskId = $this->container['taskCreationModel']->create($taskData);
-                    $result = ['task_id' => $taskId];
-                    break;
-
-                case 'update_task':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
-                    }
-
-                    $taskData = ['id' => $arguments['task_id']];
-                    if (isset($arguments['title'])) $taskData['title'] = $arguments['title'];
-                    if (isset($arguments['description'])) $taskData['description'] = $arguments['description'];
-                    if (isset($arguments['column_id'])) $taskData['column_id'] = $arguments['column_id'];
-                    
-                    $updateResult = $this->container['taskModificationModel']->update($taskData);
-                    $result = ['success' => $updateResult];
-                    break;
-                    
-                case 'get_columns':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
-                    }
-
-                    $columns = $this->container['columnModel']->getAll($arguments['project_id']);
-                    $result = array_values($columns);
-                    break;
-                    
-                case 'move_task':
-                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
-                    $taskId = isset($arguments['task_id']) ? (int) $arguments['task_id'] : 0;
-                    $columnId = isset($arguments['column_id']) ? (int) $arguments['column_id'] : 0;
-
-                    if ($projectId <= 0 || $taskId <= 0 || $columnId <= 0) {
-                        return $this->createToolExecutionErrorResponse(
-                            'Invalid arguments: project_id, task_id, and column_id must be positive integers',
-                            $id
-                        );
-                    }
-
-                    $moveResult = $this->container['taskPositionModel']->movePosition(
-                        $projectId,
-                        $taskId,
-                        $columnId,
-                        1
-                    );
-                    $result = ['success' => $moveResult];
-                    break;
-                    
-                case 'get_task_details':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
-                    }
-                    
-                    $task = $this->container['taskFinderModel']->getById($arguments['task_id']);
-                    $result = $task;
-                    break;
-
-                case 'delete_task':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
-                    }
-
-                    $deleteResult = $this->container['taskModel']->remove($arguments['task_id']);
-                    $result = ['success' => $deleteResult];
-                    break;
-
-                case 'assign_task':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['user_id']) || (int) $arguments['user_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id and user_id must be positive integers', $id);
-                    }
-
-                    $assignResult = $this->container['taskModificationModel']->update([
-                        'id' => $arguments['task_id'],
-                        'owner_id' => $arguments['user_id']
-                    ]);
-                    $result = ['success' => $assignResult];
-                    break;
-                    
-                case 'set_task_due_date':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['due_date']) || !is_string($arguments['due_date']) || trim($arguments['due_date']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and due_date must be a non-empty string', $id);
-                    }
-
-                    $dueDateResult = $this->container['taskModificationModel']->update([
-                        'id' => $arguments['task_id'],
-                        'date_due' => $arguments['due_date']
-                    ]);
-                    $result = ['success' => $dueDateResult];
-                    break;
-                    
-                case 'add_task_comment':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0 || !isset($arguments['comment']) || !is_string($arguments['comment']) || trim($arguments['comment']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer and comment must be a non-empty string', $id);
-                    }
-
-                    $commentId = $this->container['commentModel']->create([
-                        'task_id' => $arguments['task_id'],
-                        'comment' => $arguments['comment'],
-                        'user_id' => isset($arguments['user_id']) ? (int) $arguments['user_id'] : 0
-                    ]);
-                    $result = ['comment_id' => $commentId];
-                    break;
-                    
-                case 'get_users':
-                    $users = $this->container['userModel']->getAll();
-                    $result = array_values($users);
-                    break;
-                    
-                case 'get_task_comments':
-                    if (!isset($arguments['task_id']) || (int) $arguments['task_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
-                    }
-
-                    $comments = $this->container['commentModel']->getAll($arguments['task_id']);
-                    $result = array_values($comments);
-                    break;
-                    
-                // Administrative Tools - Column Management
-                case 'create_column':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['title']) || !is_string($arguments['title']) || trim($arguments['title']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and title must be a non-empty string', $id);
-                    }
-
-                    $columnId = $this->container['columnModel']->create(
-                        $arguments['project_id'],
-                        trim($arguments['title']),
-                        $arguments['task_limit'] ?? 0,
-                        $arguments['description'] ?? ''
-                    );
-                    $result = ['column_id' => $columnId];
-                    break;
-                    
-                case 'update_column':
-                    if (!isset($arguments['column_id']) || (int) $arguments['column_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
-                    }
-
-                    $columnId = (int) $arguments['column_id'];
-                    $column = $this->container['columnModel']->getById($columnId);
-                    if (empty($column)) {
-                        return $this->createToolExecutionErrorResponse('Column not found', $id);
-                    }
-                    $title = $arguments['title'] ?? $column['title'];
-                    $taskLimit = isset($arguments['task_limit']) ? (int) $arguments['task_limit'] : (int) $column['task_limit'];
-                    $description = $arguments['description'] ?? $column['description'];
-                    $hideInDashboard = isset($arguments['hide_in_dashboard'])
-                        ? (int) $arguments['hide_in_dashboard']
-                        : (int) ($column['hide_in_dashboard'] ?? 0);
-                    $updateResult = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description, $hideInDashboard);
-                    $result = ['success' => $updateResult];
-                    break;
-                    
-                case 'delete_column':
-                    if (!isset($arguments['column_id']) || (int) $arguments['column_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
-                    }
-
-                    $deleteResult = $this->container['columnModel']->remove($arguments['column_id']);
-                    $result = ['success' => $deleteResult];
-                    break;
-                    
-                case 'reorder_columns':
-                    return $this->handleReorderColumns($arguments, $id);
-                    
-                // Administrative Tools - Category Management
-                case 'create_category':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
-                    }
-
-                    $categoryId = $this->container['categoryModel']->create([
-                        'project_id' => $arguments['project_id'],
-                        'name' => trim($arguments['name']),
-                        'description' => $arguments['description'] ?? ''
-                    ]);
-                    $result = ['category_id' => $categoryId];
-                    break;
-
-                case 'update_category':
-                    if (!isset($arguments['category_id']) || (int) $arguments['category_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
-                    }
-
-                    $updateData = ['id' => $arguments['category_id']];
-                    if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
-                    if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
-                    $updateResult = $this->container['categoryModel']->update($updateData);
-                    $result = ['success' => $updateResult];
-                    break;
-                    
-                case 'delete_category':
-                    if (!isset($arguments['category_id']) || (int) $arguments['category_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
-                    }
-                    
-                    $deleteResult = $this->container['categoryModel']->remove($arguments['category_id']);
-                    $result = ['success' => $deleteResult];
-                    break;
-
-                case 'get_categories':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
-                    }
-
-                    $categories = $this->container['categoryModel']->getAll($arguments['project_id']);
-                    $result = array_values($categories);
-                    break;
-                    
-                // Administrative Tools - Swimlane Management
-                case 'create_swimlane':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0 || !isset($arguments['name']) || !is_string($arguments['name']) || trim($arguments['name']) === '') {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer and name must be a non-empty string', $id);
-                    }
-
-                    $swimlaneId = $this->container['swimlaneModel']->create(
-                        $arguments['project_id'],
-                        trim($arguments['name']),
-                        $arguments['description'] ?? ''
-                    );
-                    $result = ['swimlane_id' => $swimlaneId];
-                    break;
-
-                case 'update_swimlane':
-                    if (!isset($arguments['swimlane_id']) || (int) $arguments['swimlane_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: swimlane_id must be a positive integer', $id);
-                    }
-
-                    $updateData = [];
-                    if (isset($arguments['name'])) $updateData['name'] = $arguments['name'];
-                    if (isset($arguments['description'])) $updateData['description'] = $arguments['description'];
-                    $updateResult = $this->container['swimlaneModel']->update($arguments['swimlane_id'], $updateData);
-                    $result = ['success' => $updateResult];
-                    break;
-                    
-                case 'delete_swimlane':
-                    $projectId = isset($arguments['project_id']) ? (int) $arguments['project_id'] : 0;
-                    $swimlaneId = isset($arguments['swimlane_id']) ? (int) $arguments['swimlane_id'] : 0;
-
-                    if ($projectId <= 0 || $swimlaneId <= 0) {
-                        return $this->createToolExecutionErrorResponse(
-                            'Invalid arguments: project_id and swimlane_id must be positive integers',
-                            $id
-                        );
-                    }
-
-                    $deleteResult = $this->container['swimlaneModel']->remove($projectId, $swimlaneId);
-                    $result = ['success' => $deleteResult];
-                    break;
-                    
-                case 'get_swimlanes':
-                    if (!isset($arguments['project_id']) || (int) $arguments['project_id'] <= 0) {
-                        return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
-                    }
-
-                    $swimlanes = $this->container['swimlaneModel']->getAll($arguments['project_id']);
-                    $result = array_values($swimlanes);
-                    break;
-                    
-                default:
-                    return $this->errorResponse(-32602, 'Unknown tool: ' . $toolName, $id);
-            }
-            
-            return $this->createSuccessResponse($result, $id);
-            
+            return $this->dispatchTool($toolName, $arguments, $id);
         } catch (InvalidArgumentException $exception) {
             return $this->createToolExecutionErrorResponse($exception->getMessage(), $id);
         } catch (Throwable $exception) {
@@ -835,10 +481,546 @@ class McpServer extends Base
             return $this->createToolExecutionErrorResponse('Tool execution failed', $id);
         }
     }
-    
+
     /**
-     * List available resources
+     * @param array<string,mixed> $args
      */
+    private function dispatchTool(string $toolName, array $args, int|string|null $id): array
+    {
+        switch ($toolName) {
+
+            // ----------------------------------------------------------------
+            case 'get_projects':
+                $ids      = $this->access->getVisibleProjectIds();
+                $projects = [];
+                foreach ($ids as $pid) {
+                    $p = $this->container['projectModel']->getById($pid);
+                    if (!empty($p)) {
+                        $projects[] = $p;
+                    }
+                }
+                return $this->createSuccessResponse(array_values($projects), $id);
+
+            // ----------------------------------------------------------------
+            case 'create_project':
+                if (!$this->access->canCreateProject()) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!isset($args['name']) || !is_string($args['name']) || trim($args['name']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
+                }
+
+                $projectId = $this->container['projectModel']->create([
+                    'name'        => trim($args['name']),
+                    'description' => $args['description'] ?? '',
+                ]);
+                return $this->createSuccessResponse(['project_id' => $projectId], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_tasks':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!$this->access->canSeeProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $statusId = array_key_exists('status_id', $args)
+                    ? (int) $args['status_id']
+                    : TaskModel::STATUS_OPEN;
+
+                if (!in_array($statusId, [TaskModel::STATUS_OPEN, TaskModel::STATUS_CLOSED], true)) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: status_id must be 0 or 1', $id);
+                }
+
+                $tasks = $this->container['taskFinderModel']->getAll($projectId, $statusId);
+                return $this->createSuccessResponse(array_values($tasks), $id);
+
+            // ----------------------------------------------------------------
+            case 'create_task':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['title']) || !is_string($args['title']) || trim($args['title']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
+                }
+
+                if (!$this->access->canWriteToProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $taskData = [
+                    'project_id'  => $projectId,
+                    'title'       => trim($args['title']),
+                    'description' => $args['description'] ?? '',
+                    'creator_id'  => $this->userId,
+                ];
+
+                if (isset($args['column_id'])) {
+                    $colId  = (int) $args['column_id'];
+                    $column = $this->access->authorizeColumn($colId);
+                    if ($column === null || (int) $column['project_id'] !== $projectId) {
+                        return $this->forbiddenResponse($id);
+                    }
+                    $taskData['column_id'] = $colId;
+                }
+
+                $taskId = $this->container['taskCreationModel']->create($taskData);
+                return $this->createSuccessResponse(['task_id' => $taskId], $id);
+
+            // ----------------------------------------------------------------
+            case 'update_task':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canWriteToProject((int) $task['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $taskData = ['id' => $taskId];
+                if (isset($args['title']))       $taskData['title']       = $args['title'];
+                if (isset($args['description'])) $taskData['description'] = $args['description'];
+
+                if (isset($args['column_id'])) {
+                    $colId  = (int) $args['column_id'];
+                    $column = $this->access->authorizeColumn($colId);
+                    if ($column === null || (int) $column['project_id'] !== (int) $task['project_id']) {
+                        return $this->forbiddenResponse($id);
+                    }
+                    $taskData['column_id'] = $colId;
+                }
+
+                $ok = $this->container['taskModificationModel']->update($taskData);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_columns':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!$this->access->canSeeProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $columns = $this->container['columnModel']->getAll($projectId);
+                return $this->createSuccessResponse(array_values($columns), $id);
+
+            // ----------------------------------------------------------------
+            case 'move_task':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                $taskId    = $this->requirePositiveInt($args, 'task_id',    $id);
+                $columnId  = $this->requirePositiveInt($args, 'column_id',  $id);
+
+                if ($projectId === null || $taskId === null || $columnId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id, task_id, and column_id must be positive integers', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null || (int) $task['project_id'] !== $projectId) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canWriteToProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $column = $this->access->authorizeColumn($columnId);
+                if ($column === null || (int) $column['project_id'] !== $projectId) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['taskPositionModel']->movePosition($projectId, $taskId, $columnId, 1);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_task_details':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                return $this->createSuccessResponse($task, $id);
+
+            // ----------------------------------------------------------------
+            case 'delete_task':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canDeleteTask($task)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['taskModel']->remove($taskId);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'assign_task':
+                $taskId    = $this->requirePositiveInt($args, 'task_id', $id);
+                $assigneeId = $this->requirePositiveInt($args, 'user_id', $id);
+
+                if ($taskId === null || $assigneeId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id and user_id must be positive integers', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $projectId = (int) $task['project_id'];
+
+                if (!$this->access->canWriteToProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                // Only assignable users (active members/managers, including groups)
+                $assignable = $this->container['projectUserRoleModel']->getAssignableUsers($projectId);
+                if (!array_key_exists($assigneeId, $assignable)) {
+                    return $this->createToolExecutionErrorResponse('User is not an assignable member of this project', $id);
+                }
+
+                $ok = $this->container['taskModificationModel']->update(['id' => $taskId, 'owner_id' => $assigneeId]);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'set_task_due_date':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['due_date']) || !is_string($args['due_date']) || trim($args['due_date']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: due_date must be a non-empty string', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canWriteToProject((int) $task['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['taskModificationModel']->update(['id' => $taskId, 'date_due' => $args['due_date']]);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'add_task_comment':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['comment']) || !is_string($args['comment']) || trim($args['comment']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: comment must be a non-empty string', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canWriteToProject((int) $task['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $commentId = $this->container['commentModel']->create([
+                    'task_id' => $taskId,
+                    'comment' => trim($args['comment']),
+                    'user_id' => $this->userId, // always the token owner
+                ]);
+                return $this->createSuccessResponse(['comment_id' => $commentId], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_users':
+                return $this->createSuccessResponse($this->getSafeUsers(), $id);
+
+            // ----------------------------------------------------------------
+            case 'get_task_comments':
+                $taskId = $this->requirePositiveInt($args, 'task_id', $id);
+                if ($taskId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: task_id must be a positive integer', $id);
+                }
+
+                $task = $this->access->authorizeTask($taskId);
+                if ($task === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $comments = $this->container['commentModel']->getAll($taskId);
+                return $this->createSuccessResponse(array_values($comments), $id);
+
+            // ----------------------------------------------------------------
+            // Column management (project manager only)
+            // ----------------------------------------------------------------
+            case 'create_column':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['title']) || !is_string($args['title']) || trim($args['title']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
+                }
+
+                if (!$this->access->canManageBoard($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $columnId = $this->container['columnModel']->create(
+                    $projectId,
+                    trim($args['title']),
+                    $args['task_limit'] ?? 0,
+                    $args['description'] ?? ''
+                );
+                return $this->createSuccessResponse(['column_id' => $columnId], $id);
+
+            // ----------------------------------------------------------------
+            case 'update_column':
+                $columnId = $this->requirePositiveInt($args, 'column_id', $id);
+                if ($columnId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
+                }
+
+                $column = $this->access->authorizeColumn($columnId);
+                if ($column === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard((int) $column['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $title         = $args['title']       ?? $column['title'];
+                $taskLimit     = isset($args['task_limit'])      ? (int) $args['task_limit']      : (int) $column['task_limit'];
+                $description   = $args['description'] ?? $column['description'];
+                $hideInDash    = isset($args['hide_in_dashboard']) ? (int) $args['hide_in_dashboard'] : (int) ($column['hide_in_dashboard'] ?? 0);
+
+                $ok = $this->container['columnModel']->update($columnId, $title, $taskLimit, $description, $hideInDash);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'delete_column':
+                $columnId = $this->requirePositiveInt($args, 'column_id', $id);
+                if ($columnId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: column_id must be a positive integer', $id);
+                }
+
+                $column = $this->access->authorizeColumn($columnId);
+                if ($column === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard((int) $column['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['columnModel']->remove($columnId);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'reorder_columns':
+                return $this->handleReorderColumns($args, $id);
+
+            // ----------------------------------------------------------------
+            // Category management (project manager only)
+            // ----------------------------------------------------------------
+            case 'create_category':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['name']) || !is_string($args['name']) || trim($args['name']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
+                }
+
+                if (!$this->access->canManageBoard($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $categoryId = $this->container['categoryModel']->create([
+                    'project_id'  => $projectId,
+                    'name'        => trim($args['name']),
+                    'description' => $args['description'] ?? '',
+                ]);
+                return $this->createSuccessResponse(['category_id' => $categoryId], $id);
+
+            // ----------------------------------------------------------------
+            case 'update_category':
+                $categoryId = $this->requirePositiveInt($args, 'category_id', $id);
+                if ($categoryId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
+                }
+
+                $category = $this->access->authorizeCategory($categoryId);
+                if ($category === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard((int) $category['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $updateData = ['id' => $categoryId];
+                if (isset($args['name']))        $updateData['name']        = $args['name'];
+                if (isset($args['description'])) $updateData['description'] = $args['description'];
+
+                $ok = $this->container['categoryModel']->update($updateData);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'delete_category':
+                $categoryId = $this->requirePositiveInt($args, 'category_id', $id);
+                if ($categoryId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: category_id must be a positive integer', $id);
+                }
+
+                $category = $this->access->authorizeCategory($categoryId);
+                if ($category === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard((int) $category['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['categoryModel']->remove($categoryId);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_categories':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!$this->access->canSeeProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $categories = $this->container['categoryModel']->getAll($projectId);
+                return $this->createSuccessResponse(array_values($categories), $id);
+
+            // ----------------------------------------------------------------
+            // Swimlane management (project manager only)
+            // ----------------------------------------------------------------
+            case 'create_swimlane':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!isset($args['name']) || !is_string($args['name']) || trim($args['name']) === '') {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: name must be a non-empty string', $id);
+                }
+
+                if (!$this->access->canManageBoard($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $swimlaneId = $this->container['swimlaneModel']->create(
+                    $projectId,
+                    trim($args['name']),
+                    $args['description'] ?? ''
+                );
+                return $this->createSuccessResponse(['swimlane_id' => $swimlaneId], $id);
+
+            // ----------------------------------------------------------------
+            case 'update_swimlane':
+                $swimlaneId = $this->requirePositiveInt($args, 'swimlane_id', $id);
+                if ($swimlaneId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: swimlane_id must be a positive integer', $id);
+                }
+
+                $swimlane = $this->access->authorizeSwimlane($swimlaneId);
+                if ($swimlane === null) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard((int) $swimlane['project_id'])) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $updateData = [];
+                if (isset($args['name']))        $updateData['name']        = $args['name'];
+                if (isset($args['description'])) $updateData['description'] = $args['description'];
+
+                $ok = $this->container['swimlaneModel']->update($swimlaneId, $updateData);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'delete_swimlane':
+                $projectId  = $this->requirePositiveInt($args, 'project_id',  $id);
+                $swimlaneId = $this->requirePositiveInt($args, 'swimlane_id', $id);
+
+                if ($projectId === null || $swimlaneId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id and swimlane_id must be positive integers', $id);
+                }
+
+                $swimlane = $this->access->authorizeSwimlane($swimlaneId);
+                if ($swimlane === null || (int) $swimlane['project_id'] !== $projectId) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                if (!$this->access->canManageBoard($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $ok = $this->container['swimlaneModel']->remove($projectId, $swimlaneId);
+                return $this->createSuccessResponse(['success' => $ok], $id);
+
+            // ----------------------------------------------------------------
+            case 'get_swimlanes':
+                $projectId = $this->requirePositiveInt($args, 'project_id', $id);
+                if ($projectId === null) {
+                    return $this->createToolExecutionErrorResponse('Invalid arguments: project_id must be a positive integer', $id);
+                }
+
+                if (!$this->access->canSeeProject($projectId)) {
+                    return $this->forbiddenResponse($id);
+                }
+
+                $swimlanes = $this->container['swimlaneModel']->getAll($projectId);
+                return $this->createSuccessResponse(array_values($swimlanes), $id);
+
+            // ----------------------------------------------------------------
+            default:
+                return $this->errorResponse(-32602, 'Unknown tool: ' . $toolName, $id);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Resources
+    // -----------------------------------------------------------------------
+
     private function listResources(array $params, int|string|null $id): array
     {
         $cursor = $params['cursor'] ?? null;
@@ -848,29 +1030,26 @@ class McpServer extends Base
 
         return [
             'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
+            'id'      => $id,
+            'result'  => [
                 'resources' => [
                     [
-                        'uri' => 'kanboard://projects',
-                        'name' => 'Project List',
-                        'description' => 'List of all projects',
-                        'mimeType' => 'application/json'
+                        'uri'         => 'kanboard://projects',
+                        'name'        => 'Project List',
+                        'description' => 'List of projects visible to you',
+                        'mimeType'    => 'application/json',
                     ],
                     [
-                        'uri' => 'kanboard://users',
-                        'name' => 'User List',
-                        'description' => 'List of all users',
-                        'mimeType' => 'application/json'
-                    ]
-                ]
-            ]
+                        'uri'         => 'kanboard://users',
+                        'name'        => 'User List',
+                        'description' => 'List of users you can interact with',
+                        'mimeType'    => 'application/json',
+                    ],
+                ],
+            ],
         ];
     }
 
-    /**
-     * List available resource templates.
-     */
     private function listResourceTemplates(array $params, int|string|null $id): array
     {
         $cursor = $params['cursor'] ?? null;
@@ -880,172 +1059,119 @@ class McpServer extends Base
 
         return [
             'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
-                'resourceTemplates' => [],
-            ],
+            'id'      => $id,
+            'result'  => ['resourceTemplates' => []],
         ];
     }
-    
-    /**
-     * Read a resource
-     */
+
     private function readResource(array $params, int|string|null $id): array
     {
         $uri = $params['uri'] ?? '';
-        
+
         try {
             switch ($uri) {
                 case 'kanboard://projects':
-                    $projects = $this->container['projectModel']->getAll();
-                    $content = json_encode(array_values($projects), JSON_PRETTY_PRINT);
+                    $ids  = $this->access->getVisibleProjectIds();
+                    $rows = [];
+                    foreach ($ids as $pid) {
+                        $p = $this->container['projectModel']->getById($pid);
+                        if (!empty($p)) {
+                            $rows[] = $p;
+                        }
+                    }
+                    $content = json_encode(array_values($rows), JSON_PRETTY_PRINT);
                     break;
-                    
+
                 case 'kanboard://users':
-                    $users = $this->container['userModel']->getAll();
-                    $content = json_encode(array_values($users), JSON_PRETTY_PRINT);
+                    $content = json_encode($this->getSafeUsers(), JSON_PRETTY_PRINT);
                     break;
-                    
+
                 default:
                     return $this->errorResponse(-32002, 'Resource not found', $id, ['uri' => $uri]);
             }
-            
+
             return [
                 'jsonrpc' => '2.0',
-                'id' => $id,
-                'result' => [
+                'id'      => $id,
+                'result'  => [
                     'contents' => [
-                        [
-                            'uri' => $uri,
-                            'mimeType' => 'application/json',
-                            'text' => $content
-                        ]
-                    ]
-                ]
+                        ['uri' => $uri, 'mimeType' => 'application/json', 'text' => $content],
+                    ],
+                ],
             ];
         } catch (Throwable $exception) {
             $this->logThrowable('Resource read failed', $exception);
             return $this->errorResponse(-32603, 'Resource read failed', $id);
         }
     }
-    
-    /**
-     * List offerings (Cursor-specific)
-     */
-    private function listOfferings(int|string|null $id): array
-    {
-        return [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
-                'offerings' => []
-            ]
-        ];
-    }
-    
-    /**
-     * Handle ping
-     */
-    private function ping(int|string|null $id): array
-    {
-        return [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => (object)[]
-        ];
-    }
-    
-    /**
-     * Get tools list for internal use
-     */
-    private function getToolsList(): array
-    {
-        // For internal use if needed
-        return [];
-    }
-    
-    /**
-     * Get resources list for internal use
-     */
-    private function getResourcesList(): array
-    {
-        return [
-            [
-                'uri' => 'kanboard://projects',
-                'name' => 'Project List',
-                'description' => 'List of all projects',
-                'mimeType' => 'application/json'
-            ],
-            [
-                'uri' => 'kanboard://users',
-                'name' => 'User List',
-                'description' => 'List of all users',
-                'mimeType' => 'application/json'
-            ]
-        ];
-    }
-    
-    /**
-     * Create error response
-     */
-    private function errorResponse(int $code, string $message, int|string|null $id, mixed $data = null): array
-    {
-        $error = [
-            'code' => $code,
-            'message' => $message
-        ];
 
-        if ($data !== null) {
-            $error['data'] = $data;
+    // -----------------------------------------------------------------------
+    // User list helper
+    // -----------------------------------------------------------------------
+
+    /**
+     * Return a safe subset of user data: id, username, name only.
+     *
+     * App-admin: all active users.
+     * Others: distinct members of visible projects.
+     *
+     * @return array<int,array{id:int,username:string,name:string}>
+     */
+    private function getSafeUsers(): array
+    {
+        $safe = [];
+
+        if ($this->access->isAppAdmin()) {
+            $rows = $this->container['userModel']->getActiveUsers();
+            foreach ($rows as $row) {
+                $safe[(int) $row['id']] = [
+                    'id'       => (int)    $row['id'],
+                    'username' => (string) $row['username'],
+                    'name'     => (string) ($row['name'] ?? ''),
+                ];
+            }
+        } else {
+            foreach ($this->access->getVisibleProjectIds() as $pid) {
+                $members = $this->container['projectUserRoleModel']->getAllUsers($pid);
+                foreach ($members as $uid => $displayName) {
+                    if (isset($safe[$uid])) {
+                        continue;
+                    }
+                    $user = $this->container['userModel']->getById($uid);
+                    if (!empty($user) && $this->container['userModel']->isActive($uid)) {
+                        $safe[$uid] = [
+                            'id'       => (int)    $user['id'],
+                            'username' => (string) $user['username'],
+                            'name'     => (string) ($user['name'] ?? ''),
+                        ];
+                    }
+                }
+            }
         }
 
-        return [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'error' => $error,
-        ];
+        return array_values($safe);
     }
 
-    private function createToolExecutionErrorResponse(string $message, int|string|null $id): array
+    // -----------------------------------------------------------------------
+    // Misc protocol helpers
+    // -----------------------------------------------------------------------
+
+    private function listOfferings(int|string|null $id): array
     {
-        return [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
-                'content' => [
-                    [
-                        'type' => 'text',
-                        'text' => $message,
-                    ],
-                ],
-                'isError' => true,
-            ],
-        ];
+        return ['jsonrpc' => '2.0', 'id' => $id, 'result' => ['offerings' => []]];
     }
 
-    private function createSuccessResponse(mixed $result, int|string|null $id): array
+    private function ping(int|string|null $id): array
     {
-        return [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'result' => [
-                'content' => [
-                    [
-                        'type' => 'text',
-                        'text' => json_encode($result, JSON_PRETTY_PRINT)
-                    ]
-                ]
-            ]
-        ];
+        return ['jsonrpc' => '2.0', 'id' => $id, 'result' => (object) []];
     }
 
-    /**
-     * Canonical implementation of column reordering.
-     * Demonstrates a clean control flow: sanitize -> verify -> execute.
-     */
+    // -----------------------------------------------------------------------
+    // Column reorder (extracted, with pre-auth gate)
+    // -----------------------------------------------------------------------
+
     private function handleReorderColumns(array $arguments, int|string|null $id): array
     {
-        // 1. Sanitize and validate arguments
         try {
             [$projectId, $columnIds] = $this->sanitizeColumnReorderArguments($arguments);
         } catch (InvalidArgumentException $exception) {
@@ -1057,10 +1183,14 @@ class McpServer extends Base
             );
         }
 
-        // 2. Verify state by comparing with existing columns
+        // Auth check before any state is revealed
+        if (!$this->access->canManageBoard($projectId)) {
+            return $this->forbiddenResponse($id);
+        }
+
         /** @var ColumnModel $columnModel */
         $columnModel = $this->container['columnModel'];
-        $currentIds = $this->getColumnIdsSnapshot($columnModel, $projectId);
+        $currentIds  = $this->getColumnIdsSnapshot($columnModel, $projectId);
 
         if (($mismatchError = $this->checkColumnMismatch($columnIds, $currentIds)) !== null) {
             return $this->createAndLogFailure(
@@ -1071,12 +1201,10 @@ class McpServer extends Base
             );
         }
 
-        // 3. Execute the reordering
         try {
             foreach ($columnIds as $index => $columnId) {
                 $position = $index + 1;
                 if ($columnModel->changePosition($projectId, $columnId, $position) !== true) {
-                    // This is an exceptional case if the core model rejects the change
                     throw new \RuntimeException("Kanboard core rejected position change for column {$columnId} to {$position}.");
                 }
             }
@@ -1090,14 +1218,140 @@ class McpServer extends Base
             );
         }
 
-        // Success
         return $this->createSuccessResponse(['success' => true], $id);
     }
 
+    // -----------------------------------------------------------------------
+    // Response builders
+    // -----------------------------------------------------------------------
+
+    private function forbiddenResponse(int|string|null $id): array
+    {
+        return $this->createToolExecutionErrorResponse('Forbidden', $id);
+    }
+
+    private function errorResponse(int $code, string $message, int|string|null $id, mixed $data = null): array
+    {
+        $error = ['code' => $code, 'message' => $message];
+        if ($data !== null) {
+            $error['data'] = $data;
+        }
+        return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $error];
+    }
+
+    private function createToolExecutionErrorResponse(string $message, int|string|null $id): array
+    {
+        return [
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'result'  => [
+                'content' => [['type' => 'text', 'text' => $message]],
+                'isError' => true,
+            ],
+        ];
+    }
+
+    private function createSuccessResponse(mixed $result, int|string|null $id): array
+    {
+        return [
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'result'  => [
+                'content' => [
+                    ['type' => 'text', 'text' => json_encode($result, JSON_PRETTY_PRINT)],
+                ],
+            ],
+        ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Input validation helpers
+    // -----------------------------------------------------------------------
+
     /**
-     * Utility to check for mismatches between requested and current column sets.
-     * Returns a formatted error string or null if there is no mismatch.
+     * Return a positive integer from $args[$key], or null on failure.
+     *
+     * @param array<string,mixed> $args
      */
+    private function requirePositiveInt(array $args, string $key, int|string|null $id): ?int
+    {
+        if (!array_key_exists($key, $args)) {
+            return null;
+        }
+        return $this->filterPositiveInteger($args[$key]);
+    }
+
+    private function filterPositiveInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value)) {
+            $filtered = filter_var(trim($value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            return $filtered !== false ? (int) $filtered : null;
+        }
+
+        return null;
+    }
+
+    // -----------------------------------------------------------------------
+    // Column reorder helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * @param array<string,mixed> $arguments
+     * @return array{0:int,1:array<int,int>}
+     */
+    private function sanitizeColumnReorderArguments(array $arguments): array
+    {
+        if (!array_key_exists('project_id', $arguments)) {
+            throw new InvalidArgumentException('Invalid params: project_id is required and must be a positive integer');
+        }
+
+        $projectId = $this->filterPositiveInteger($arguments['project_id']);
+        if ($projectId === null) {
+            throw new InvalidArgumentException('Invalid params: project_id must be a positive integer');
+        }
+
+        if (!array_key_exists('column_ids', $arguments)) {
+            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
+        }
+
+        $columnIdArgument = $arguments['column_ids'];
+
+        if (is_string($columnIdArgument)) {
+            $columnIdArgument = array_values(array_filter(
+                array_map('trim', explode(',', $columnIdArgument)),
+                static fn(string $value): bool => $value !== ''
+            ));
+        } elseif ($columnIdArgument instanceof Traversable) {
+            $columnIdArgument = iterator_to_array($columnIdArgument, false);
+        }
+
+        if (!is_array($columnIdArgument) || $columnIdArgument === []) {
+            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
+        }
+
+        $columnIds = [];
+        foreach (array_values($columnIdArgument) as $index => $rawColumnId) {
+            $columnId = $this->filterPositiveInteger($rawColumnId);
+            if ($columnId === null) {
+                throw new InvalidArgumentException(sprintf(
+                    'Invalid params: column_ids[%d] must be a positive integer',
+                    $index
+                ));
+            }
+            $columnIds[] = $columnId;
+        }
+
+        if (count($columnIds) !== count(array_unique($columnIds))) {
+            throw new InvalidArgumentException('Invalid params: column_ids must contain unique identifiers');
+        }
+
+        return [$projectId, $columnIds];
+    }
+
     private function checkColumnMismatch(array $requested, array $current): ?string
     {
         if (count($requested) !== count($current)) {
@@ -1123,87 +1377,6 @@ class McpServer extends Base
     }
 
     /**
-     * Unified failure point for logging and creating an error response.
-     */
-    private function createAndLogFailure(
-        string $logMessage,
-        int|string|null $id,
-        string $responseMessage,
-        array $context,
-        ?Throwable $exception = null
-    ): array {
-        $logContext = [
-            'context' => $context,
-            'mcp_channel' => 'reorder_columns_failure'
-        ];
-
-        if ($exception !== null) {
-            $logContext['exception'] = $exception;
-        }
-
-        $this->logError($logMessage, $logContext);
-
-        return $this->createToolExecutionErrorResponse($responseMessage, $id);
-    }
-
-    /**
-     * @param array<string, mixed> $arguments
-     * @return array{0:int,1:array<int,int>}
-     */
-    private function sanitizeColumnReorderArguments(array $arguments): array
-    {
-        if (!array_key_exists('project_id', $arguments)) {
-            throw new InvalidArgumentException('Invalid params: project_id is required and must be a positive integer');
-        }
-
-        $projectId = $this->filterPositiveInteger($arguments['project_id']);
-
-        if ($projectId === null) {
-            throw new InvalidArgumentException('Invalid params: project_id must be a positive integer');
-        }
-
-        if (!array_key_exists('column_ids', $arguments)) {
-            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
-        }
-
-        $columnIdArgument = $arguments['column_ids'];
-
-        if (is_string($columnIdArgument)) {
-            $columnIdArgument = array_values(array_filter(
-                array_map('trim', explode(',', $columnIdArgument)),
-                static fn(string $value): bool => $value !== ''
-            ));
-        } elseif ($columnIdArgument instanceof Traversable) {
-            $columnIdArgument = iterator_to_array($columnIdArgument, false);
-        }
-
-        if (!is_array($columnIdArgument) || $columnIdArgument === []) {
-            throw new InvalidArgumentException('Invalid params: column_ids must be a non-empty array of positive integers');
-        }
-
-        $columnIds = [];
-
-        foreach (array_values($columnIdArgument) as $index => $rawColumnId) {
-            $columnId = $this->filterPositiveInteger($rawColumnId);
-
-            if ($columnId === null) {
-                throw new InvalidArgumentException(sprintf(
-                    'Invalid params: column_ids[%d] must be a positive integer',
-                    $index
-                ));
-            }
-
-            $columnIds[] = $columnId;
-        }
-
-        if (count($columnIds) !== count(array_unique($columnIds))) {
-            throw new InvalidArgumentException('Invalid params: column_ids must contain unique identifiers');
-        }
-
-        return [$projectId, $columnIds];
-    }
-
-    /**
      * @param ColumnModel|object $columnModel
      * @return array<int,int>
      */
@@ -1216,11 +1389,7 @@ class McpServer extends Base
         try {
             $columns = $columnModel->getAll($projectId);
         } catch (Throwable $exception) {
-            $this->logThrowable(
-                sprintf('Failed to fetch column snapshot for project %d', $projectId),
-                $exception
-            );
-
+            $this->logThrowable(sprintf('Failed to fetch column snapshot for project %d', $projectId), $exception);
             return [];
         }
 
@@ -1239,23 +1408,23 @@ class McpServer extends Base
         ));
     }
 
-    private function filterPositiveInteger(mixed $value): ?int
-    {
-        if (is_int($value)) {
-            return $value > 0 ? $value : null;
+    // -----------------------------------------------------------------------
+    // Logging helpers
+    // -----------------------------------------------------------------------
+
+    private function createAndLogFailure(
+        string $logMessage,
+        int|string|null $id,
+        string $responseMessage,
+        array $context,
+        ?Throwable $exception = null
+    ): array {
+        $logContext = ['context' => $context, 'mcp_channel' => 'tool_failure'];
+        if ($exception !== null) {
+            $logContext['exception'] = $exception;
         }
-
-        if (is_string($value)) {
-            $filtered = filter_var(trim($value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-
-            if ($filtered !== false) {
-                return (int) $filtered;
-            }
-
-            return null;
-        }
-
-        return null;
+        $this->logError($logMessage, $logContext);
+        return $this->createToolExecutionErrorResponse($responseMessage, $id);
     }
 
     private function logError(string $message, array $context = []): void
@@ -1265,9 +1434,6 @@ class McpServer extends Base
         }
     }
 
-    /**
-     * Log throwable details without exposing them to clients
-     */
     private function logThrowable(string $message, Throwable $throwable): void
     {
         if (isset($this->container['logger'])) {

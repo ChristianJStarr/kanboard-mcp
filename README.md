@@ -10,21 +10,21 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 
 ## Features
 
-- **Complete Enterprise Control**: 26 powerful tools covering every aspect of project management
-- **Secure Token Authentication**: Enterprise-grade security with token-based access
-- **AI Assistant Ready**: Optimized for Cursor, Claude, and other AI development tools
-- **Full CRUD Operations**: Create, read, update, and delete across all Kanboard entities
-- **Workflow Management**: Complete control over columns, swimlanes, and categories
-- **Real-time Operations**: Instant project updates through natural language
-- **JSON-RPC 2.0 Compliant**: Fully compliant with MCP specification v2025-11-25
+- **Per-user Token Authentication**: Every Kanboard user gets their own MCP token that grants access only to their own boards and nothing else.
+- **Role-Aware Authorization**: Read, write, or manage-board operations are enforced using each user's actual Kanboard project role (viewer / member / manager).
+- **AI Assistant Ready**: Optimized for Cursor, Claude, and other AI development tools.
+- **Full CRUD Operations**: Create, read, update, and delete across all Kanboard entities you have permission for.
+- **Workflow Management**: Complete control over columns, swimlanes, and categories (project managers only).
+- **Real-time Operations**: Instant project updates through natural language.
+- **JSON-RPC 2.0 Compliant**: Fully compliant with MCP specification v2025-11-25.
 
 ## Complete Tool Suite (26 Tools)
 
 ### Project & Task Management (8 Tools)
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
-| `get_projects` | List all projects | *"Show me all projects"* |
-| `create_project` | Create new projects | *"Create a new project called Mobile App"* |
+| `get_projects` | List your visible projects | *"Show me all my projects"* |
+| `create_project` | Create new projects (admin/manager only) | *"Create a new project called Mobile App"* |
 | `get_tasks` | Get project tasks | *"List all tasks in the Marketing project"* |
 | `create_task` | Create new tasks | *"Add a task to implement user authentication"* |
 | `update_task` | Modify existing tasks | *"Update the login task description"* |
@@ -32,7 +32,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 | `get_task_details` | Get detailed task info | *"Show me full details for task #123"* |
 | `move_task` | Move tasks between columns | *"Move the API task to Done column"* |
 
-### Column Management (4 Tools)
+### Column Management (4 Tools) — project manager only
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
 | `get_columns` | List project columns | *"Show me all columns in this project"* |
@@ -41,7 +41,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 | `delete_column` | Remove columns | *"Delete the unused Draft column"* |
 | `reorder_columns` | Change column positions | *"Move Testing column before Done"* |
 
-### Category Management (4 Tools) 
+### Category Management (4 Tools) — project manager only
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
 | `get_categories` | List project categories | *"Show me all task categories"* |
@@ -49,7 +49,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 | `update_category` | Modify categories | *"Rename Bug Fixes to Critical Issues"* |
 | `delete_category` | Remove categories | *"Delete the unused category"* |
 
-### Swimlane Management (4 Tools)
+### Swimlane Management (4 Tools) — project manager only
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
 | `get_swimlanes` | List project swimlanes | *"Show me all team swimlanes"* |
@@ -60,115 +60,105 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 ### User & Assignment Management (6 Tools)
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
-| `get_users` | List all system users | *"Show me all team members"* |
-| `assign_task` | Assign tasks to users | *"Assign the API task to John"* |
+| `get_users` | List users you can interact with | *"Show me all team members"* |
+| `assign_task` | Assign tasks to project members | *"Assign the API task to John"* |
 | `set_task_due_date` | Set task deadlines | *"Set due date for login task to next Friday"* |
 | `add_task_comment` | Add task comments | *"Add comment about testing requirements"* |
 | `get_task_comments` | Get task comments | *"Show all comments on this task"* |
-
-## Real-World Usage Examples
-
-### For Software Development Teams
-```
-"Create a new project called Mobile Banking App with columns for Backlog, Development, Testing, and Production"
-
-"Add a Bug Fixes category and create a Critical Issues swimlane for the mobile team"
-
-"Move all authentication tasks to the Testing column and assign them to Sarah with due date next Monday"
-```
-
-### For Marketing Teams  
-```
-"Show me all tasks in the Campaign project and create a new Social Media category"
-
-"Create a Content Review column with a 3-task limit and move all draft posts there"
-
-"Add a comment to the blog post task about SEO requirements"
-```
-
-### For Project Managers
-```
-"List all projects and show me which ones have overdue tasks"
-
-"Create swimlanes for Frontend, Backend, and QA teams in the Development project"
-
-"Reorder columns to put Code Review between Development and Testing"
-```
 
 ## Quick Start
 
 ### Installation
 
-1. **Download & Extract**: Copy the `ModelContextProtocol` folder to your Kanboard `plugins/` directory
-2. **Activate Plugin**: Access Kanboard as administrator → **Settings** → **Plugins** → Enable MCP Plugin
-3. **Generate Token**: Go to **Settings** → **Integrations** → **Configure MCP Settings** → **Generate Token**
-4. **Copy Server URL**: Use the generated MCP Server URL with your AI assistant
+1. **Download & Extract**: Copy the `ModelContextProtocol` folder to your Kanboard `plugins/` directory.
+2. **Activate Plugin**: Access Kanboard as administrator → **Settings** → **Plugins** → Enable MCP Plugin.
+3. **Get your token**: Go to **Settings** → **Integrations** (admins) **or** your user profile → **Integrations** (all users). Click **Autogenerar** (or **Generate Token** on first use).
+4. **Copy the MCP URL**: The configuration block shows the full URL with your token already embedded.
+
+> Each user generates their own token independently. An admin looking at another user's profile does **not** see that user's token.
 
 ### MCP Server URL Format
 ```
 https://your-kanboard.com/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=YOUR_TOKEN
 ```
 
+The token can also be sent as a `Authorization: Bearer YOUR_TOKEN` header (preferred for programmatic clients).
+
 ## AI Assistant Integration
 
 ### Cursor IDE Integration
-1. Copy your MCP Server URL
-2. Add to Cursor's MCP settings
-3. Start managing Kanboard through natural language in your IDE!
+1. Copy your MCP configuration block from the integrations page.
+2. Paste it into Cursor's MCP settings (`.cursor/mcp.json` or settings UI).
+3. Start managing your Kanboard boards through natural language in your IDE.
 
 ### Claude Desktop Integration
-1. Add server configuration to Claude Desktop
-2. Use the MCP URL as the server endpoint
-3. Manage projects while chatting with Claude!
+1. Copy the configuration block from the integrations page.
+2. Paste it into Claude Desktop's MCP server configuration (`claude_desktop_config.json`).
+3. Manage your projects while chatting with Claude.
 
 ### Custom MCP Clients
-The plugin works with MCP-compatible clients and negotiates protocol versions up to 2025-11-25.
+The plugin works with any MCP-compatible client and negotiates protocol versions up to 2025-11-25.
 
-## Security Features
+## Security
 
-- **Token-Based Authentication**: Each token provides controlled access to your Kanboard instance
-- **Secure Communication**: All requests require valid token authentication
-- **User Context**: Operations maintain proper user attribution and permissions
-- **Activity Logging**: All MCP operations are logged for audit trails
-- **Token Rotation**: Generate new tokens to revoke old access
+### Per-user Tokens
+- Each Kanboard user has **one active MCP token**. It identifies that user on every request.
+- Tokens are 64 hex characters (256 bits) generated with `random_bytes`.
+- Clicking **Autogenerar** immediately invalidates the old token and issues a new one.
+- When a user account is deactivated in Kanboard, their token stops working immediately.
+
+### Scope Enforcement
+Every tool call is authorized against the token user's real Kanboard permissions:
+
+| Role | What the MCP token grants |
+|------|--------------------------|
+| Project Viewer | Read-only: `get_tasks`, `get_task_details`, `get_columns`, `get_categories`, `get_swimlanes`, `get_task_comments` |
+| Project Member | Viewer rights plus task create/update/move/comment/assign/due-date. Delete only tasks they created. |
+| Project Manager | Member rights plus delete any task, and full column/category/swimlane CRUD. |
+| App Admin | Project Manager on every active project. Also `create_project` and `get_users` across all users. |
+| App Manager | Can `create_project`. Project access follows normal membership. |
+
+- `get_projects` and `kanboard://projects` return **only** the boards the token user can see.
+- `get_users` / `kanboard://users` return only `id`, `username`, `name` — no password hashes, API tokens, or 2FA secrets.
+- Object IDs from other users' projects return a generic `Forbidden` error to prevent oracle attacks.
+- The token URL is never written to server-side logs. `Referrer-Policy: no-referrer` is sent on every MCP response.
+
+### Token Transport
+- Send the token in the `Authorization: Bearer` header when possible (not stored in server logs).
+- The `token` query-string parameter is also accepted for MCP clients that embed it in the URL.
+- If both header and query-string tokens are present and they differ, the request is rejected.
 
 ## Technical Specifications
 
 ### Requirements
 - **Kanboard**: 1.2.0 or higher
-- **PHP**: 7.0 or higher  
+- **PHP**: 7.4 or higher (uses typed properties and named arguments)
 - **Database**: MySQL, PostgreSQL, or SQLite
-- **Memory**: 128MB+ recommended for large projects
 
 ### Protocol Compliance
-- **MCP Version**: 2025-11-25 (with backward negotiation support)
-- **Transport**: HTTP with JSON-RPC 2.0
-- **Capabilities**: Tools, Resources, Experimental features
-- **Error Handling**: Comprehensive error responses with debugging info
+- **MCP Version**: 2025-11-25 (with backward negotiation to 2024-11-05)
+- **Transport**: Streamable HTTP with JSON-RPC 2.0
+- **Capabilities**: Tools, Resources
 
 ### API Endpoints
-- **Main Handler**: `/?controller=ModelContextProtocolController&action=handle`
-- **Authentication**: Token-based via URL parameter
+- **Main Handler**: `/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol`
+- **Authentication**: Per-user bearer token (header or query string)
 - **Content-Type**: `application/json`
 - **Methods**: POST for all MCP operations
 
-## Enterprise Features
+## Changelog
 
-### Workflow Automation
-- **Task Lifecycle Management**: Complete automation of task creation to completion
-- **Team Coordination**: Automatic assignment and notification through swimlanes
-- **Quality Control**: Column limits and category organization for workflow management
+### v1.1.0
+- **Per-user tokens**: Each user now has their own MCP token scoped to their boards and role.
+- **Autogenerar button**: Token rotation available to every user from Settings → Integrations or their profile.
+- **Role enforcement**: All 26 tools and both resources enforce Kanboard project roles on every call.
+- **User data privacy**: `get_users` no longer exposes password hashes, API tokens, or 2FA state.
+- **Token transport hardening**: `Authorization: Bearer` header support; `Referrer-Policy: no-referrer`; conflicting dual-token requests rejected.
 
-### Reporting & Analytics
-- **Project Overview**: Instant access to project status and team workload
-- **Task Tracking**: Detailed task information including comments and history
-- **Team Performance**: User assignments and completion tracking
-
-### Integration Capabilities
-- **CI/CD Integration**: Automate task updates from build systems
-- **Slack/Teams Bots**: Create chatbots that manage Kanboard through MCP
-- **Custom Dashboards**: Build external tools that sync with Kanboard data
-
+### v1.0.0 (Initial Release)
+- 26 tools covering the full Kanboard project management surface.
+- Administrative controls: columns, categories, swimlanes.
+- AI assistant optimization for Cursor and Claude.
 
 ## Contributing
 
@@ -179,23 +169,12 @@ We welcome contributions! Please read our contributing guidelines and submit pul
 - **Documentation**: Examples and use cases
 - **Bug Fixes**: Issue resolution and stability
 
-## Changelog
-
-### v1.0.0 (Initial Release)
-- **26 Complete Tools**: Full project management suite
-- **Administrative Controls**: Column, category, and swimlane management  
-- **Enterprise Security**: Enhanced token management
-- **AI Assistant Optimization**: Optimized for Cursor and Claude
-
 ## Support
 
 - **Documentation**: Comprehensive examples in this README
 - **Issues**: [GitHub Issues](https://github.com/ChristianJStarr/kanboard-mcp/issues)
 - **Community**: [Kanboard Community](https://kanboard.org/community)
-- **Enterprise Support**: Available for large deployments
 
 ## License
 
 This plugin is released under the MIT License - see [LICENSE](LICENSE) file for details.
-
----

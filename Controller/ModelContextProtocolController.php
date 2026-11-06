@@ -11,7 +11,6 @@ use Throwable;
  * Model Context Protocol Controller
  *
  * @package  Kanboard\Plugin\ModelContextProtocol\Controller
- * @author   Plugin Author
  */
 class ModelContextProtocolController extends Base
 {
@@ -25,19 +24,26 @@ class ModelContextProtocolController extends Base
         '2024-11-05',
     ];
 
+    // -----------------------------------------------------------------------
+    // MCP handle endpoint (public, token-authenticated)
+    // -----------------------------------------------------------------------
+
     /**
-     * Handle MCP requests for different transport types
+     * Handle MCP requests for different transport types.
      */
-    public function handle()
+    public function handle(): void
     {
-        // Add CORS headers immediately for all requests
+        // Security: never let the token appear in Referer headers sent to
+        // third-party origins embedded in server-side error pages.
+        header('Referrer-Policy: no-referrer');
+
+        // CORS headers for all responses
         header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
         header('Access-Control-Allow-Headers: Accept, Authorization, Content-Type, X-Requested-With, Origin, User-Agent, Cache-Control, Pragma');
         header('Access-Control-Expose-Headers: Content-Type, Cache-Control, Expires, Pragma');
         header('Access-Control-Max-Age: 86400');
-        
-        // Handle OPTIONS preflight immediately
+
         if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
             http_response_code(200);
             exit;
@@ -47,17 +53,17 @@ class ModelContextProtocolController extends Base
             $this->sendError(403, 'Forbidden: invalid origin');
             return;
         }
-        
-        // Validate token first
-        if (!$this->validateToken()) {
+
+        $userId = $this->authenticateToken();
+        if ($userId === null) {
             $this->sendError(401, 'Unauthorized');
             return;
         }
-        
+
         $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
         if ($requestMethod === 'POST') {
-            $this->handleStreamableHttp();
+            $this->handleStreamableHttp($userId);
             return;
         }
 
@@ -70,36 +76,62 @@ class ModelContextProtocolController extends Base
 
         $this->sendError(405, 'Method Not Allowed');
     }
-    
+
+    // -----------------------------------------------------------------------
+    // Token management (requires authenticated session)
+    // -----------------------------------------------------------------------
+
     /**
-     * Validate the MCP token
+     * Regenerate the MCP token for the currently logged-in user.
+     *
+     * Requires APP_USER role and a POST request with a CSRF token in the body.
+     * Bound to session user only — never rotates another user's token.
      */
-    private function validateToken(): bool
+    public function generateToken(): void
     {
-        $token = $_GET['token'] ?? '';
-        
-        if (empty($token)) {
-            return false;
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
         }
-        
-        if (!$this->mcpTokenModel->validateToken($token)) {
-            return false;
+
+        $this->checkCSRFParam();
+
+        $userId = $this->userSession->getId();
+
+        $this->mcpTokenModel->regenerateForUser($userId);
+        $this->flash->success(t('New MCP token generated successfully'));
+
+        $target = $this->request->getStringParam('target', 'config');
+
+        if ($target === 'user') {
+            $this->response->redirect(
+                $this->helper->url->to('UserViewController', 'integrations', [
+                    'plugin' => 'ModelContextProtocol',
+                    'user_id' => $userId,
+                ]),
+                true
+            );
+        } else {
+            $this->response->redirect(
+                $this->helper->url->to('ConfigController', 'integrations', [
+                    'plugin' => 'ModelContextProtocol',
+                ]),
+                true
+            );
         }
-        
-        return true;
     }
-    
-    /**
-     * Handle Streamable HTTP transport
-     */
-    private function handleStreamableHttp(): void
+
+    // -----------------------------------------------------------------------
+    // Streamable HTTP transport
+    // -----------------------------------------------------------------------
+
+    private function handleStreamableHttp(int $userId): void
     {
         if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
             $this->sendError(405, 'Method Not Allowed');
             return;
         }
 
-        // Set proper headers for Streamable HTTP
         header('Cache-Control: no-cache, no-store, must-revalidate');
         header('Pragma: no-cache');
         header('Expires: 0');
@@ -137,8 +169,8 @@ class ModelContextProtocolController extends Base
         $isNotification = !array_key_exists('id', $request);
 
         try {
-            $mcpServer = new McpServer($this->container);
-            $response = $mcpServer->handleRequest($request);
+            $mcpServer = new McpServer($this->container, $userId);
+            $response  = $mcpServer->handleRequest($request);
 
             if ($isNotification || $response === null) {
                 http_response_code(202);
@@ -150,17 +182,17 @@ class ModelContextProtocolController extends Base
             exit;
         } catch (Throwable $exception) {
             http_response_code(500);
-            $this->sendJsonRpcError(-32603, 'Internal error', isset($request['id']) ? $request['id'] : null, 500);
+            $this->sendJsonRpcError(-32603, 'Internal error', $request['id'] ?? null, 500);
             return;
         }
     }
-    
-    /**
-     * Handle SSE requests from Cursor IDE
-     */
+
+    // -----------------------------------------------------------------------
+    // SSE transport (keep-alive, no data plane)
+    // -----------------------------------------------------------------------
+
     private function handleSSE(): void
     {
-        // Set SSE headers
         header('Content-Type: text/event-stream');
         header('X-Accel-Buffering: no');
         header('Cache-Control: no-cache');
@@ -170,19 +202,16 @@ class ModelContextProtocolController extends Base
         @ini_set('output_buffering', 'off');
         @ini_set('zlib.output_compression', '0');
 
-        // Disable buffering
         while (ob_get_level()) {
             ob_end_clean();
         }
         ob_implicit_flush(true);
-        
-        // Prime reconnect semantics with an event id and empty data payload.
+
         $eventId = bin2hex(random_bytes(8));
         echo "id: {$eventId}\n";
         echo "data:\n\n";
         flush();
 
-        // Keep connection alive with lightweight comment heartbeats.
         $counter = 0;
         while (true) {
             if ($counter % 30 === 0) {
@@ -190,64 +219,56 @@ class ModelContextProtocolController extends Base
                 flush();
             }
 
-            // Check if client disconnected
             if (connection_aborted()) {
                 break;
             }
-            
+
             sleep(1);
             $counter++;
         }
     }
-    
-    /**
-     * Send JSON-RPC error response
-     */
-    private function sendJsonRpcError(int $code, string $message, int|string|null $id, int $httpStatus = 200): void
-    {
-        http_response_code($httpStatus);
-        header('Content-Type: application/json');
 
-        $response = [
-            'jsonrpc' => '2.0',
-            'id' => $id,
-            'error' => [
-                'code' => $code,
-                'message' => $message
-            ]
-        ];
-        
-        echo json_encode($response);
-        exit;
-    }
-    
-    /**
-     * Send HTTP error response
-     */
-    private function sendError(int $code, string $message): void
-    {
-        http_response_code($code);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => $message]);
-        exit;
-    }
+    // -----------------------------------------------------------------------
+    // Token authentication
+    // -----------------------------------------------------------------------
 
     /**
-     * @param array<mixed> $value
+     * Extract and validate the bearer token.
+     *
+     * Accept the token from Authorization: Bearer <token> or from the
+     * `token` query-string parameter.  If both are present and differ,
+     * reject the request to prevent confusion.
+     *
+     * Returns the authenticated user id, or null on failure.
+     * The token value is never written to a log.
      */
-    private function isListArray(array $value): bool
+    private function authenticateToken(): ?int
     {
-        $expected = 0;
-        foreach (array_keys($value) as $key) {
-            if ($key !== $expected) {
-                return false;
-            }
-
-            $expected++;
+        $headerToken = null;
+        $authHeader  = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        if ($authHeader !== '' && stripos($authHeader, 'Bearer ') === 0) {
+            $headerToken = trim(substr($authHeader, 7));
         }
 
-        return true;
+        $queryToken = isset($_GET['token']) && $_GET['token'] !== '' ? (string) $_GET['token'] : null;
+
+        if ($headerToken !== null && $queryToken !== null && $headerToken !== $queryToken) {
+            // Two tokens that disagree – reject to avoid ambiguity
+            return null;
+        }
+
+        $token = $headerToken ?? $queryToken;
+
+        if ($token === null || $token === '') {
+            return null;
+        }
+
+        return $this->mcpTokenModel->authenticate($token);
     }
+
+    // -----------------------------------------------------------------------
+    // Origin check (DNS-rebinding protection)
+    // -----------------------------------------------------------------------
 
     private function isValidOrigin(): bool
     {
@@ -276,7 +297,7 @@ class ModelContextProtocolController extends Base
             return false;
         }
 
-        $hostParts = explode(':', $hostHeader, 2);
+        $hostParts   = explode(':', $hostHeader, 2);
         $requestHost = strtolower($hostParts[0]);
         $requestPort = isset($hostParts[1]) && ctype_digit($hostParts[1])
             ? (int) $hostParts[1]
@@ -293,82 +314,44 @@ class ModelContextProtocolController extends Base
 
         return isset($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off' && $_SERVER['HTTPS'] !== '';
     }
-    
-    /**
-     * Settings page
-     */
-    public function settings()
+
+    // -----------------------------------------------------------------------
+    // Response helpers
+    // -----------------------------------------------------------------------
+
+    private function sendJsonRpcError(int $code, string $message, int|string|null $id, int $httpStatus = 200): void
     {
-        $this->ensureTablesExist();
-        
-        $this->response->html($this->helper->layout->config('modelcontextprotocol:config/integration', [
-            'title' => 'Model Context Protocol Settings',
-            'tokens' => $this->mcpTokenModel->getAll(),
-            'mcp_url' => $this->getMcpUrl()
-        ]));
-    }
-    
-    /**
-     * Ensure database tables exist
-     */
-    private function ensureTablesExist()
-    {
-        $pdo = $this->db->getConnection();
-        
-        // Check if the table exists
-        $stmt = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mcp_tokens'");
-        $stmt->execute();
-        
-        if (!$stmt->fetch()) {
-            // Create table if it doesn't exist
-            $sql = "CREATE TABLE mcp_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                is_active INTEGER DEFAULT 1
-            )";
-            
-            $pdo->exec($sql);
-        }
-    }
-    
-    /**
-     * Generate new token
-     */
-    public function generateToken()
-    {
-        $this->ensureTablesExist();
-        
-        $name = $this->request->getStringParam('name', 'Default Token');
-        $token = bin2hex(random_bytes(32));
-        
-        $result = $this->mcpTokenModel->create([
-            'token' => $token,
-            'name' => $name,
-            'created_at' => time(),
-            'is_active' => 1
+        http_response_code($httpStatus);
+        header('Content-Type: application/json');
+
+        echo json_encode([
+            'jsonrpc' => '2.0',
+            'id'      => $id,
+            'error'   => ['code' => $code, 'message' => $message],
         ]);
-        
-        if ($result) {
-            $this->flash->success('Token generated successfully');
-        } else {
-            $this->flash->failure('Failed to generate token');
-        }
-        
-        $this->response->redirect($this->helper->url->to('ModelContextProtocolController', 'settings', ['plugin' => 'ModelContextProtocol']));
+        exit;
     }
-    
-    /**
-     * Get MCP URL
-     */
-    private function getMcpUrl()
+
+    private function sendError(int $code, string $message): void
     {
-        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $basePath = $this->helper->url->to('ModelContextProtocolController', 'handle', ['plugin' => 'ModelContextProtocol']);
-        
-        return $protocol . $host . $basePath;
+        http_response_code($code);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => $message]);
+        exit;
     }
-    
-} 
+
+    /**
+     * @param array<mixed> $value
+     */
+    private function isListArray(array $value): bool
+    {
+        $expected = 0;
+        foreach (array_keys($value) as $key) {
+            if ($key !== $expected) {
+                return false;
+            }
+            $expected++;
+        }
+        return true;
+    }
+}

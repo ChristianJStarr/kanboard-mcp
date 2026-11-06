@@ -1,0 +1,276 @@
+<?php
+declare(strict_types=1);
+
+namespace Kanboard\Plugin\ModelContextProtocol\Core;
+
+use Kanboard\Core\Security\Role;
+
+/**
+ * Per-user permission gate for MCP tool calls.
+ *
+ * This class deliberately does NOT rely on the browser session or on
+ * ProjectPermissionModel::isUserAllowed(), which reads the session and
+ * returns true for any admin regardless of the supplied user_id.
+ *
+ * Terminology used in comments:
+ *   - "board manager" = project role PROJECT_MANAGER
+ *   - "board member"  = project role PROJECT_MEMBER
+ *   - "board viewer"  = project role PROJECT_VIEWER
+ *   - "app admin"     = application role APP_ADMIN
+ *   - "app manager"   = application role APP_MANAGER
+ */
+class McpAccess
+{
+    private $container;
+    private int $userId;
+
+    /** Cached application role string for the token user */
+    private ?string $appRole = null;
+
+    /** Cached list of visible project ids  [project_id => project_name] */
+    private ?array $visibleProjects = null;
+
+    public function __construct($container, int $userId)
+    {
+        $this->container = $container;
+        $this->userId    = $userId;
+    }
+
+    // -----------------------------------------------------------------------
+    // Application-level checks
+    // -----------------------------------------------------------------------
+
+    /**
+     * Return true when the token user may call create_project.
+     * Only app-admin and app-manager can create projects.
+     */
+    public function canCreateProject(): bool
+    {
+        $role = $this->getAppRole();
+        return $role === Role::APP_ADMIN || $role === Role::APP_MANAGER;
+    }
+
+    /**
+     * Return true when the token user is an application admin.
+     * Used to decide whether get_users returns all users or only visible members.
+     */
+    public function isAppAdmin(): bool
+    {
+        return $this->getAppRole() === Role::APP_ADMIN;
+    }
+
+    // -----------------------------------------------------------------------
+    // Project-level visibility
+    // -----------------------------------------------------------------------
+
+    /**
+     * Return all active project ids the token user may see.
+     *
+     * - App-admin: every active project (matches what Kanboard's UI shows).
+     * - Anyone else: only projects where the user is a direct member or
+     *   belongs to a member group.
+     *
+     * @return int[]
+     */
+    public function getVisibleProjectIds(): array
+    {
+        if ($this->visibleProjects !== null) {
+            return array_keys($this->visibleProjects);
+        }
+
+        if ($this->isAppAdmin()) {
+            $rows = $this->container['projectModel']->getAllByStatus(1 /* active */);
+            $this->visibleProjects = [];
+            foreach ($rows as $row) {
+                $this->visibleProjects[(int) $row['id']] = $row['name'];
+            }
+        } else {
+            $raw = $this->container['projectUserRoleModel']
+                ->getActiveProjectsByUser($this->userId);
+            $this->visibleProjects = [];
+            foreach ($raw as $id => $name) {
+                $this->visibleProjects[(int) $id] = $name;
+            }
+        }
+
+        return array_keys($this->visibleProjects);
+    }
+
+    /**
+     * Return true when the token user can see the given project.
+     */
+    public function canSeeProject(int $projectId): bool
+    {
+        return in_array($projectId, $this->getVisibleProjectIds(), true);
+    }
+
+    // -----------------------------------------------------------------------
+    // Role-based write checks
+    // -----------------------------------------------------------------------
+
+    /**
+     * Return true when the user holds at least PROJECT_MEMBER on the project.
+     * Viewer + no role → false.
+     */
+    public function canWriteToProject(int $projectId): bool
+    {
+        $role = $this->getProjectRole($projectId);
+        return $role === Role::PROJECT_MEMBER || $role === Role::PROJECT_MANAGER;
+    }
+
+    /**
+     * Return true when the user holds PROJECT_MANAGER on the project.
+     */
+    public function isProjectManager(int $projectId): bool
+    {
+        return $this->getProjectRole($projectId) === Role::PROJECT_MANAGER;
+    }
+
+    /**
+     * Return true when the user may delete the given task.
+     *
+     * - Project manager: delete any task in the project.
+     * - Project member: only tasks they created.
+     * - Viewer / no role / custom role: never.
+     *
+     * @param array<string,mixed> $task  Row from taskFinderModel->getById()
+     */
+    public function canDeleteTask(array $task): bool
+    {
+        $role = $this->getProjectRole((int) $task['project_id']);
+
+        if ($role === Role::PROJECT_MANAGER) {
+            return true;
+        }
+
+        if ($role === Role::PROJECT_MEMBER) {
+            return (int) ($task['creator_id'] ?? 0) === $this->userId;
+        }
+
+        return false;
+    }
+
+    /**
+     * Return true when the user may modify columns, categories, or swimlanes
+     * on the given project (project manager only).
+     */
+    public function canManageBoard(int $projectId): bool
+    {
+        return $this->isProjectManager($projectId);
+    }
+
+    // -----------------------------------------------------------------------
+    // Object-level authorization helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * Resolve a task and verify the token user can see its project.
+     *
+     * Returns the task array on success or null when the task does not exist
+     * or the user may not see its project.  Callers should return a generic
+     * "Forbidden" error for both null cases to avoid oracle attacks.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function authorizeTask(int $taskId): ?array
+    {
+        $task = $this->container['taskFinderModel']->getById($taskId);
+        if (empty($task)) {
+            return null;
+        }
+
+        if (!$this->canSeeProject((int) $task['project_id'])) {
+            return null;
+        }
+
+        return $task;
+    }
+
+    /**
+     * Resolve a column and verify the token user can see its project.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function authorizeColumn(int $columnId): ?array
+    {
+        $column = $this->container['columnModel']->getById($columnId);
+        if (empty($column)) {
+            return null;
+        }
+
+        if (!$this->canSeeProject((int) $column['project_id'])) {
+            return null;
+        }
+
+        return $column;
+    }
+
+    /**
+     * Resolve a category and verify the token user can see its project.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function authorizeCategory(int $categoryId): ?array
+    {
+        $category = $this->container['categoryModel']->getById($categoryId);
+        if (empty($category)) {
+            return null;
+        }
+
+        if (!$this->canSeeProject((int) $category['project_id'])) {
+            return null;
+        }
+
+        return $category;
+    }
+
+    /**
+     * Resolve a swimlane and verify the token user can see its project.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function authorizeSwimlane(int $swimlaneId): ?array
+    {
+        $swimlane = $this->container['swimlaneModel']->getById($swimlaneId);
+        if (empty($swimlane)) {
+            return null;
+        }
+
+        if (!$this->canSeeProject((int) $swimlane['project_id'])) {
+            return null;
+        }
+
+        return $swimlane;
+    }
+
+    /**
+     * Return the project role for the token user on the given project.
+     *
+     * App-admins are treated as project managers everywhere.
+     * Returns empty string when the user has no role.
+     */
+    public function getProjectRole(int $projectId): string
+    {
+        if ($this->isAppAdmin()) {
+            return Role::PROJECT_MANAGER;
+        }
+
+        $role = $this->container['projectUserRoleModel']->getUserRole($projectId, $this->userId);
+        return $role ?? '';
+    }
+
+    /**
+     * Return the token user's application role string.
+     */
+    private function getAppRole(): string
+    {
+        if ($this->appRole !== null) {
+            return $this->appRole;
+        }
+
+        $user = $this->container['userModel']->getById($this->userId);
+        $this->appRole = $user['role'] ?? Role::APP_USER;
+
+        return $this->appRole;
+    }
+}
