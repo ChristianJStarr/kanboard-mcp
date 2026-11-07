@@ -6,6 +6,7 @@ require_once __DIR__ . '/RecordingHttpResponse.php';
 use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Core\Http\Request;
 use Kanboard\Plugin\ModelContextProtocol\Controller\ModelContextProtocolController;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
 
 class SaveUrlTokenSettingControllerTest extends McpTestCase
 {
@@ -59,7 +60,9 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
 
     public function testAdminCanDisableAndReenableUrlTokens(): void
     {
-        $this->login($this->adminId());
+        $adminId = $this->adminId();
+        $plain = $this->container['mcpTokenModel']->regenerateForUser($adminId);
+        $this->login($adminId);
         $response = $this->bindHttp([
             'csrf_token' => $this->container['token']->getReusableCSRFToken(),
             'mcp_disable_url_token' => '1',
@@ -70,12 +73,14 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         $controller->saveUrlTokenSetting();
 
         $this->assertTrue($this->container['mcpTokenModel']->urlTokensDisabled());
+        $this->assertStoredUrlTokenSetting('1');
         $this->assertSame(
             $this->container['helper']->url->to('ConfigController', 'integrations'),
             $response->redirectUrl
         );
         $this->assertTrue($response->redirectSelf);
         $this->assertSame('MCP URL token setting saved', session_get('flash')['success']);
+        $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
 
         $this->bindHttp([
             'csrf_token' => $this->container['token']->getReusableCSRFToken(),
@@ -83,6 +88,68 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         ], []);
         $controller->saveUrlTokenSetting();
         $this->assertFalse($this->container['mcpTokenModel']->urlTokensDisabled());
+        $this->assertStoredUrlTokenSetting('0');
+        $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
+        $this->assertNull($this->container['mcpTokenModel']->takeReveal($adminId));
+
+        $this->bindHttp([
+            'csrf_token' => $this->container['token']->getReusableCSRFToken(),
+            'mcp_disable_url_token' => '0',
+            'target' => 'config',
+        ], []);
+        $controller->saveUrlTokenSetting();
+        $this->assertFalse($this->container['mcpTokenModel']->urlTokensDisabled());
+        $this->assertStoredUrlTokenSetting('0');
+        $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
+    }
+
+    public function testNonAdminCannotReenableUrlTokens(): void
+    {
+        $this->assertTrue($this->container['mcpTokenModel']->setUrlTokensDisabled(true));
+        $userId = $this->createUser('not-an-admin-reenable');
+        $this->login($userId);
+        $this->bindHttp([
+            'csrf_token' => $this->container['token']->getReusableCSRFToken(),
+            'mcp_disable_url_token' => '0',
+            'target' => 'user',
+        ], []);
+
+        $controller = new ModelContextProtocolController($this->container);
+
+        try {
+            $controller->saveUrlTokenSetting();
+            $this->fail('Expected AccessForbiddenException');
+        } catch (AccessForbiddenException $exception) {
+            $this->assertTrue($this->container['mcpTokenModel']->urlTokensDisabled());
+            $this->assertStoredUrlTokenSetting('1');
+        }
+    }
+
+    public function testHiddenZeroIsPostedWithTheUrlTokenForm(): void
+    {
+        $panel = file_get_contents(dirname(__DIR__) . '/Template/config/integration.php');
+        $forms = file_get_contents(dirname(__DIR__) . '/Template/config/forms.php');
+        $this->assertIsString($panel);
+        $this->assertIsString($forms);
+
+        $this->assertMatchesRegularExpression(
+            '/<input type="hidden"\s+name="mcp_disable_url_token"\s+value="0"\s+form="mcp-url-token-form">/',
+            $panel
+        );
+        $this->assertLessThan(
+            strpos($panel, 'id="mcp-disable-url-token"'),
+            strpos($panel, 'value="0"')
+        );
+        $this->assertStringNotContainsString('name="mcp_disable_url_token"', $forms);
+    }
+
+    private function assertStoredUrlTokenSetting(string $expected): void
+    {
+        $row = $this->container['db']->table('settings')
+            ->eq('option', McpTokenModel::CONFIG_DISABLE_URL_TOKEN)
+            ->findOne();
+        $this->assertNotEmpty($row);
+        $this->assertSame($expected, $row['value']);
     }
 
     /**

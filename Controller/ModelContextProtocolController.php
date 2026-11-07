@@ -131,6 +131,8 @@ class ModelContextProtocolController extends BaseController
 
         $userId = $this->userSession->getId();
         $posted = $this->request->getRawValue('mcp_disable_url_token');
+        // The companion hidden field posts "0" when the box is unchecked.
+        // A missing field is the same: URL tokens stay allowed.
         $disabled = is_string($posted) && $posted === '1';
 
         $this->mcpTokenModel->setUrlTokensDisabled($disabled);
