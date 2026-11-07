@@ -131,9 +131,7 @@ class ModelContextProtocolController extends BaseController
 
         $userId = $this->userSession->getId();
         $posted = $this->request->getRawValue('mcp_disable_url_token');
-        // The companion hidden field posts "0" when the box is unchecked.
-        // A missing field is the same: URL tokens stay allowed.
-        $disabled = is_string($posted) && $posted === '1';
+        $disabled = $this->postedUrlTokensDisabled($posted);
 
         $this->mcpTokenModel->setUrlTokensDisabled($disabled);
         $this->flash->success(t('MCP URL token setting saved'));
@@ -167,6 +165,31 @@ class ModelContextProtocolController extends BaseController
             $this->helper->url->to('ConfigController', 'integrations'),
             true
         );
+    }
+
+    /**
+     * True when the disable-URL-token checkbox was posted as on.
+     *
+     * A missing field or "0" means URL tokens stay allowed. Duplicate names
+     * (hidden 0 plus checkbox 1) can arrive as a string or as a list;
+     * Request::getRawValue() returns $_POST as PHP parsed it. Any "1" counts
+     * as checked so a first-wins string or a two-value list still saves on.
+     *
+     * @param mixed $posted
+     */
+    private function postedUrlTokensDisabled($posted): bool
+    {
+        if (is_array($posted)) {
+            foreach ($posted as $value) {
+                if ($this->postedUrlTokensDisabled($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return is_string($posted) && $posted === '1';
     }
 
     /**

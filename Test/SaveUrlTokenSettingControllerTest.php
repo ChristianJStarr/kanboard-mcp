@@ -103,6 +103,36 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
     }
 
+    public function testAdminPostBothZeroAndOneDisablesUrlTokens(): void
+    {
+        $adminId = $this->adminId();
+        $plain = $this->container['mcpTokenModel']->regenerateForUser($adminId);
+        $this->login($adminId);
+        $this->bindHttp([
+            'csrf_token' => $this->container['token']->getReusableCSRFToken(),
+            'mcp_disable_url_token' => ['0', '1'],
+            'target' => 'config',
+        ], []);
+
+        $controller = new ModelContextProtocolController($this->container);
+        $controller->saveUrlTokenSetting();
+
+        $this->assertTrue($this->container['mcpTokenModel']->urlTokensDisabled());
+        $this->assertStoredUrlTokenSetting('1');
+        $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
+        $this->assertNull($this->container['mcpTokenModel']->takeReveal($adminId));
+
+        $this->bindHttp([
+            'csrf_token' => $this->container['token']->getReusableCSRFToken(),
+            'mcp_disable_url_token' => ['0'],
+            'target' => 'config',
+        ], []);
+        $controller->saveUrlTokenSetting();
+        $this->assertFalse($this->container['mcpTokenModel']->urlTokensDisabled());
+        $this->assertStoredUrlTokenSetting('0');
+        $this->assertSame($adminId, $this->container['mcpTokenModel']->authenticate($plain));
+    }
+
     public function testNonAdminCannotReenableUrlTokens(): void
     {
         $this->assertTrue($this->container['mcpTokenModel']->setUrlTokensDisabled(true));
@@ -125,7 +155,7 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         }
     }
 
-    public function testHiddenZeroIsPostedWithTheUrlTokenForm(): void
+    public function testUrlTokenCheckboxSubmitsOnChangeWithDistinctHiddenName(): void
     {
         $panel = file_get_contents(dirname(__DIR__) . '/Template/config/integration.php');
         $forms = file_get_contents(dirname(__DIR__) . '/Template/config/forms.php');
@@ -133,14 +163,19 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         $this->assertIsString($forms);
 
         $this->assertMatchesRegularExpression(
-            '/<input type="hidden"\s+name="mcp_disable_url_token"\s+value="0"\s+form="mcp-url-token-form">/',
+            '/<input type="hidden"\s+name="mcp_disable_url_token_present"\s+value="1"\s+form="mcp-url-token-form">/',
             $panel
         );
-        $this->assertLessThan(
-            strpos($panel, 'id="mcp-disable-url-token"'),
-            strpos($panel, 'value="0"')
+        $this->assertDoesNotMatchRegularExpression(
+            '/<input type="hidden"[^>]*name="mcp_disable_url_token"/',
+            $panel
         );
+        $this->assertStringContainsString('id="mcp-disable-url-token"', $panel);
+        $this->assertStringContainsString('onchange="this.form.submit()"', $panel);
+        $this->assertStringContainsString('disabled="disabled"', $panel);
+        $this->assertStringContainsString('id="mcp-save-url-token-setting"', $panel);
         $this->assertStringNotContainsString('name="mcp_disable_url_token"', $forms);
+        $this->assertStringContainsString('id="mcp-url-token-form"', $forms);
     }
 
     private function assertStoredUrlTokenSetting(string $expected): void
