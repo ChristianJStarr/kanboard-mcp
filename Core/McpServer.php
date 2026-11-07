@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Core;
 
 use Kanboard\Core\Base;
+use Kanboard\Core\Security\Role;
 use Kanboard\Model\ColumnModel;
 use Kanboard\Model\TaskModel;
 use InvalidArgumentException;
@@ -125,7 +126,7 @@ class McpServer extends Base
                 'serverInfo' => [
                     'name'        => 'kanboard-mcp',
                     'title'       => 'Kanboard MCP Server',
-                    'version'     => '1.1.2',
+                    'version'     => '1.1.3',
                     'description' => 'Kanboard project-management tools and resources via MCP.',
                 ],
                 'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes. You can only see and modify boards you have access to.',
@@ -491,15 +492,7 @@ class McpServer extends Base
 
             // ----------------------------------------------------------------
             case 'get_projects':
-                $ids      = $this->access->getVisibleProjectIds();
-                $projects = [];
-                foreach ($ids as $pid) {
-                    $p = $this->container['projectModel']->getById($pid);
-                    if (!empty($p)) {
-                        $projects[] = $p;
-                    }
-                }
-                return $this->createSuccessResponse(array_values($projects), $id);
+                return $this->createSuccessResponse($this->visibleProjects(), $id);
 
             // ----------------------------------------------------------------
             case 'create_project':
@@ -514,7 +507,10 @@ class McpServer extends Base
                 $projectId = $this->container['projectModel']->create([
                     'name'        => trim($args['name']),
                     'description' => $args['description'] ?? '',
-                ]);
+                ], $this->userId, true);
+                if ($projectId === false) {
+                    return $this->createToolExecutionErrorResponse('Could not create project', $id);
+                }
                 return $this->createSuccessResponse(['project_id' => $projectId], $id);
 
             // ----------------------------------------------------------------
@@ -550,7 +546,8 @@ class McpServer extends Base
                     return $this->createToolExecutionErrorResponse('Invalid arguments: title must be a non-empty string', $id);
                 }
 
-                if (!$this->access->canWriteToProject($projectId)) {
+                $columnId = isset($args['column_id']) ? (int) $args['column_id'] : 0;
+                if (!$this->access->canCreateTaskInColumn($projectId, $columnId)) {
                     return $this->forbiddenResponse($id);
                 }
 
@@ -561,13 +558,12 @@ class McpServer extends Base
                     'creator_id'  => $this->userId,
                 ];
 
-                if (isset($args['column_id'])) {
-                    $colId  = (int) $args['column_id'];
-                    $column = $this->access->authorizeColumn($colId);
+                if ($columnId > 0) {
+                    $column = $this->access->authorizeColumn($columnId);
                     if ($column === null || (int) $column['project_id'] !== $projectId) {
                         return $this->forbiddenResponse($id);
                     }
-                    $taskData['column_id'] = $colId;
+                    $taskData['column_id'] = $columnId;
                 }
 
                 $taskId = $this->container['taskCreationModel']->create($taskData);
@@ -585,7 +581,7 @@ class McpServer extends Base
                     return $this->forbiddenResponse($id);
                 }
 
-                if (!$this->access->canWriteToProject((int) $task['project_id'])) {
+                if (!$this->access->canUpdateTask($task)) {
                     return $this->forbiddenResponse($id);
                 }
 
@@ -597,6 +593,9 @@ class McpServer extends Base
                     $colId  = (int) $args['column_id'];
                     $column = $this->access->authorizeColumn($colId);
                     if ($column === null || (int) $column['project_id'] !== (int) $task['project_id']) {
+                        return $this->forbiddenResponse($id);
+                    }
+                    if (!$this->access->canMoveTask((int) $task['project_id'])) {
                         return $this->forbiddenResponse($id);
                     }
                     $taskData['column_id'] = $colId;
@@ -634,7 +633,7 @@ class McpServer extends Base
                     return $this->forbiddenResponse($id);
                 }
 
-                if (!$this->access->canWriteToProject($projectId)) {
+                if (!$this->access->canMoveTask($projectId)) {
                     return $this->forbiddenResponse($id);
                 }
 
@@ -695,7 +694,7 @@ class McpServer extends Base
 
                 $projectId = (int) $task['project_id'];
 
-                if (!$this->access->canWriteToProject($projectId)) {
+                if (!$this->access->canAssignTask($projectId)) {
                     return $this->forbiddenResponse($id);
                 }
 
@@ -724,7 +723,7 @@ class McpServer extends Base
                     return $this->forbiddenResponse($id);
                 }
 
-                if (!$this->access->canWriteToProject((int) $task['project_id'])) {
+                if (!$this->access->canUpdateTask($task)) {
                     return $this->forbiddenResponse($id);
                 }
 
@@ -774,8 +773,7 @@ class McpServer extends Base
                     return $this->forbiddenResponse($id);
                 }
 
-                $comments = $this->container['commentModel']->getAll($taskId);
-                return $this->createSuccessResponse(array_values($comments), $id);
+                return $this->createSuccessResponse($this->visibleComments($taskId), $id);
 
             // ----------------------------------------------------------------
             // Column management (project manager only)
@@ -1071,15 +1069,7 @@ class McpServer extends Base
         try {
             switch ($uri) {
                 case 'kanboard://projects':
-                    $ids  = $this->access->getVisibleProjectIds();
-                    $rows = [];
-                    foreach ($ids as $pid) {
-                        $p = $this->container['projectModel']->getById($pid);
-                        if (!empty($p)) {
-                            $rows[] = $p;
-                        }
-                    }
-                    $content = json_encode(array_values($rows), JSON_PRETTY_PRINT);
+                    $content = json_encode($this->visibleProjects(), JSON_PRETTY_PRINT);
                     break;
 
                 case 'kanboard://users':
@@ -1136,24 +1126,86 @@ class McpServer extends Base
             }
         } else {
             foreach ($this->access->getVisibleProjectIds() as $pid) {
-                $members = $this->container['projectUserRoleModel']->getAllUsers($pid);
-                foreach ($members as $uid => $displayName) {
-                    if (isset($safe[$uid])) {
+                $direct = $this->container['projectUserRoleModel']->getUsers($pid);
+                $grouped = $this->container['projectGroupRoleModel']->getUsers($pid);
+                foreach (array_merge($direct, $grouped) as $user) {
+                    $uid = (int) ($user['id'] ?? 0);
+                    if ($uid === 0 || isset($safe[$uid])) {
                         continue;
                     }
-                    $user = $this->container['userModel']->getById($uid);
-                    if (!empty($user) && $this->container['userModel']->isActive($uid)) {
-                        $safe[$uid] = [
-                            'id'       => (int)    $user['id'],
-                            'username' => (string) $user['username'],
-                            'name'     => (string) ($user['name'] ?? ''),
-                        ];
-                    }
+                    $safe[$uid] = [
+                        'id'       => $uid,
+                        'username' => (string) ($user['username'] ?? ''),
+                        'name'     => (string) ($user['name'] ?? ''),
+                    ];
                 }
+            }
+
+            if ($safe !== []) {
+                $activeRows = $this->container['userModel']
+                    ->getQuery()
+                    ->in('id', array_keys($safe))
+                    ->eq('is_active', 1)
+                    ->columns('id')
+                    ->findAll();
+                $activeIds = [];
+                foreach ($activeRows as $row) {
+                    $activeIds[(int) $row['id']] = true;
+                }
+                $safe = array_intersect_key($safe, $activeIds);
             }
         }
 
         return array_values($safe);
+    }
+
+    /**
+     * Projects the token user can see, without the public-access token.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function visibleProjects(): array
+    {
+        $ids = $this->access->getVisibleProjectIds();
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = $this->container['projectModel']->getAllByIds($ids);
+        $projects = [];
+        foreach ($rows as $row) {
+            unset($row['token']);
+            $projects[] = $row;
+        }
+
+        return $projects;
+    }
+
+    /**
+     * Comments this token user is allowed to read.
+     * Same visibility rules as CommentProcedure::getAllComments, using the
+     * token user's application role rather than the browser session.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function visibleComments(int $taskId): array
+    {
+        $comments = $this->container['commentModel']->getAll($taskId);
+        $role = $this->access->applicationRole();
+        $visible = [];
+
+        foreach ($comments as $comment) {
+            $visibility = (string) ($comment['visibility'] ?? Role::APP_USER);
+            if ($role === Role::APP_MANAGER && $visibility === Role::APP_ADMIN) {
+                continue;
+            }
+            if ($role === Role::APP_USER && $visibility !== Role::APP_USER) {
+                continue;
+            }
+            $visible[] = $comment;
+        }
+
+        return array_values($visible);
     }
 
     // -----------------------------------------------------------------------

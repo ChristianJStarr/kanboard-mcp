@@ -15,6 +15,8 @@ return [
     'Generate Token'                                                                                                     => 'Generar token',
     'This will invalidate the current token. Are you sure?'                                                              => 'Esto invalidará el token actual. ¿Estás seguro?',
     'No MCP token has been generated yet. Generate a token to enable MCP access.'                                        => 'Aún no se ha generado ningún token MCP. Genera un token para habilitar el acceso MCP.',
+    'Copy this token now. It is shown only once.'                                                                        => 'Copia este token ahora. Solo se muestra una vez.',
+    'An MCP token already exists for your account. Generate a new one to replace it. The current token is not shown again.' => 'Ya existe un token MCP para tu cuenta. Genera uno nuevo para reemplazarlo. El token actual no se vuelve a mostrar.',
     'New MCP token generated successfully'                                                                               => 'Nuevo token MCP generado correctamente',
     'Unable to generate MCP token'                                                                                       => 'No se pudo generar el token MCP',
 ];

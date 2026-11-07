@@ -15,6 +15,8 @@ return [
     'Generate Token'                                                                                                     => 'Generate Token',
     'This will invalidate the current token. Are you sure?'                                                              => 'This will invalidate the current token. Are you sure?',
     'No MCP token has been generated yet. Generate a token to enable MCP access.'                                        => 'No MCP token has been generated yet. Generate a token to enable MCP access.',
+    'Copy this token now. It is shown only once.'                                                                        => 'Copy this token now. It is shown only once.',
+    'An MCP token already exists for your account. Generate a new one to replace it. The current token is not shown again.' => 'An MCP token already exists for your account. Generate a new one to replace it. The current token is not shown again.',
     'New MCP token generated successfully'                                                                               => 'New MCP token generated successfully',
     'Unable to generate MCP token'                                                                                       => 'Unable to generate MCP token',
 ];

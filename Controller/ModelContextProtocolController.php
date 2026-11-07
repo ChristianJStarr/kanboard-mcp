@@ -98,7 +98,8 @@ class ModelContextProtocolController extends BaseController
 
         $userId = $this->userSession->getId();
 
-        $this->mcpTokenModel->regenerateForUser($userId);
+        $plainToken = $this->mcpTokenModel->regenerateForUser($userId);
+        $this->mcpTokenModel->rememberReveal((int) $userId, $plainToken);
         $this->flash->success(t('New MCP token generated successfully'));
 
         $target = $this->request->getRawValue('target');
