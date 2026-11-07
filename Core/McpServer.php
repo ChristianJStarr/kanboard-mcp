@@ -36,6 +36,9 @@ class McpServer extends Base
     private int $userId;
     private McpAccess $access;
 
+    /** @var array<string,bool>|null Gateway bits for the token user, loaded once per request */
+    private ?array $enabledEndpoints = null;
+
     public function __construct($container, int $userId)
     {
         $this->container = $container;
@@ -476,9 +479,9 @@ class McpServer extends Base
         $toolName  = $params['name'];
         $arguments = $params['arguments'] ?? [];
 
-        // Capability is evaluated before the gateway bit. isEnabled is outside
-        // the dispatch try so a query failure is not treated as enabled and
-        // does not enter dispatchTool.
+        // Capability is evaluated before the gateway bit. The grant lookup is
+        // outside the dispatch try so a query failure is not treated as enabled
+        // and does not enter dispatchTool.
         $rejection = $this->rejectHiddenOrDisabledTool($toolName, $id);
         if ($rejection !== null) {
             return $rejection;
@@ -1313,7 +1316,7 @@ class McpServer extends Base
             return $this->errorResponse(-32602, 'Unknown tool: ' . $name, $id);
         }
 
-        if (!$this->gateway()->isEnabled($this->userId, $name)) {
+        if (!$this->isGatewayEnabled($name)) {
             return $this->forbiddenResponse($id);
         }
 
@@ -1339,7 +1342,7 @@ class McpServer extends Base
 
     /**
      * Catalog membership, role capability, then the stored gateway bit.
-     * A thrown isEnabled lookup fails closed and must not be treated as on.
+     * A thrown grant lookup fails closed and must not be treated as on.
      */
     private function isExposed(string $kind, string $name): bool
     {
@@ -1352,7 +1355,16 @@ class McpServer extends Base
             return false;
         }
 
-        return $this->gateway()->isEnabled($this->userId, $name);
+        return $this->isGatewayEnabled($name);
+    }
+
+    private function isGatewayEnabled(string $name): bool
+    {
+        if ($this->enabledEndpoints === null) {
+            $this->enabledEndpoints = $this->gateway()->enabledMap($this->userId);
+        }
+
+        return $this->enabledEndpoints[$name] ?? false;
     }
 
     private function gateway(): McpEndpointGatewayModel

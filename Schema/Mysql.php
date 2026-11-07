@@ -59,8 +59,17 @@ function version_4($pdo)
 {
     version_3($pdo);
 
+    // A grants table from an earlier build already holds the backfill. A second
+    // run would turn writes on for tokens created after that build.
+    if (mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants')) {
+        return;
+    }
+
+    // MySQL commits CREATE TABLE immediately. The backfill fills a staging
+    // table that is renamed last, so a failed backfill runs again next boot.
+    $pdo->exec('DROP TABLE IF EXISTS mcp_endpoint_grants_v4');
     $pdo->exec('
-        CREATE TABLE IF NOT EXISTS mcp_endpoint_grants (
+        CREATE TABLE mcp_endpoint_grants_v4 (
             user_id  INT         NOT NULL,
             endpoint VARCHAR(64) NOT NULL,
             enabled  TINYINT     NOT NULL,
@@ -70,9 +79,11 @@ function version_4($pdo)
     ');
 
     $insert = $pdo->prepare(
-        'INSERT IGNORE INTO mcp_endpoint_grants (user_id, endpoint, enabled) VALUES (:user_id, :endpoint, 1)'
+        'INSERT IGNORE INTO mcp_endpoint_grants_v4 (user_id, endpoint, enabled) VALUES (:user_id, :endpoint, 1)'
     );
     mcp_backfill_write_grants($pdo, $insert);
+
+    $pdo->exec('RENAME TABLE mcp_endpoint_grants_v4 TO mcp_endpoint_grants');
 }
 
 /**

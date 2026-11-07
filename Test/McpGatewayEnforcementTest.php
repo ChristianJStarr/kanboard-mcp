@@ -4,6 +4,7 @@ require_once __DIR__ . '/McpTestCase.php';
 
 use Kanboard\Core\Security\Role;
 use Kanboard\Model\ColumnModel;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpEndpointGatewayModel;
 use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
 
 class McpGatewayEnforcementTest extends McpTestCase
@@ -102,7 +103,7 @@ class McpGatewayEnforcementTest extends McpTestCase
             ->eq('user_id', $managerId)
             ->findOneColumn('token');
 
-        \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($this->container['db']->getConnection());
+        $this->migrateFromTokenSchema();
 
         $names = $this->toolNamesFrom($this->mcpRequest($managerId, 'tools/list'));
         $this->assertContains('create_task', $names);
@@ -113,6 +114,57 @@ class McpGatewayEnforcementTest extends McpTestCase
             ->eq('user_id', $managerId)
             ->findOneColumn('token'));
         $this->assertSame($managerId, $this->container['mcpTokenModel']->authenticate($plain));
+    }
+
+    public function testFailedGrantLookupFailsClosedOnListAndCall(): void
+    {
+        $adminId = $this->adminId();
+        $this->enableEveryCatalogEndpoint($adminId);
+        $logger = $this->recordErrors();
+        $this->replaceGateway(new class($this->container) extends McpEndpointGatewayModel {
+            public function isEnabled(int $userId, string $endpoint): bool
+            {
+                throw new RuntimeException('grant lookup down');
+            }
+
+            public function enabledMap(int $userId): array
+            {
+                throw new RuntimeException('grant lookup down');
+            }
+        });
+
+        $list = $this->mcpRequest($adminId, 'tools/list');
+        $this->assertSame(-32603, $list['error']['code']);
+        $this->assertArrayNotHasKey('result', $list);
+
+        $call = $this->callTool($adminId, 'create_project', ['name' => 'Lookup down']);
+        $this->assertSame(-32603, $call['error']['code']);
+        $this->assertArrayNotHasKey('result', $call);
+        $this->assertNull($this->container['projectModel']->getByName('Lookup down'));
+        $this->assertSame([
+            'Unhandled MCP request failure',
+            'Unhandled MCP request failure',
+        ], $logger->errors);
+    }
+
+    public function testListReadsTheGrantsOnce(): void
+    {
+        $adminId = $this->adminId();
+        $this->enableEveryCatalogEndpoint($adminId);
+        $gateway = new class($this->container) extends McpEndpointGatewayModel {
+            public int $lookups = 0;
+
+            public function enabledMap(int $userId): array
+            {
+                $this->lookups++;
+
+                return parent::enabledMap($userId);
+            }
+        };
+        $this->replaceGateway($gateway);
+
+        $this->assertCount(26, $this->toolNamesFrom($this->mcpRequest($adminId, 'tools/list')));
+        $this->assertSame(1, $gateway->lookups);
     }
 
     public function testDisabledToolIsOmittedAndCallReturnsForbidden(): void
@@ -267,6 +319,12 @@ class McpGatewayEnforcementTest extends McpTestCase
         $this->assertFalse($response['result']['capabilities']['tools']['listChanged']);
         $this->assertFalse($response['result']['capabilities']['resources']['listChanged']);
         $this->assertSame('1.2.2', $response['result']['serverInfo']['version']);
+    }
+
+    private function replaceGateway(McpEndpointGatewayModel $gateway): void
+    {
+        unset($this->container['mcpEndpointGatewayModel']);
+        $this->container['mcpEndpointGatewayModel'] = $gateway;
     }
 
     /**

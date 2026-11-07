@@ -30,22 +30,37 @@ class McpEndpointGatewayModel extends Base
             return false;
         }
 
+        return $this->enabledMap($userId)[$endpoint];
+    }
+
+    /**
+     * Effective on/off for every catalog endpoint, read with one query.
+     *
+     * A query failure is thrown. Callers must not treat that as "enabled".
+     *
+     * @return array<string,bool>
+     */
+    public function enabledMap(int $userId): array
+    {
         try {
-            $row = $this->db->table(self::TABLE)
+            $rows = $this->db->table(self::TABLE)
                 ->eq('user_id', $userId)
-                ->eq('endpoint', $endpoint)
-                ->findOne();
+                ->findAll();
         } catch (Throwable $exception) {
             throw new \RuntimeException('MCP endpoint grant lookup failed.', 0, $exception);
         }
 
-        if (empty($row) || !array_key_exists('enabled', $row)) {
-            $definition = McpCatalog::find($endpoint);
-
-            return $definition !== null && $definition['defaultEnabled'] === true;
+        $stored = [];
+        foreach ($rows as $row) {
+            $stored[$row['endpoint']] = (int) $row['enabled'] === 1;
         }
 
-        return (int) $row['enabled'] === 1;
+        $map = [];
+        foreach (McpCatalog::ENDPOINTS as $endpoint) {
+            $map[$endpoint['name']] = $stored[$endpoint['name']] ?? $endpoint['defaultEnabled'];
+        }
+
+        return $map;
     }
 
     /**
@@ -74,6 +89,7 @@ class McpEndpointGatewayModel extends Base
     {
         $access = new McpAccess($this->container, $userId);
         $allowed = array_flip($this->allowedNames($access));
+        $enabled = $this->enabledMap($userId);
         $rows = [];
 
         foreach (McpCatalog::ENDPOINTS as $endpoint) {
@@ -84,7 +100,7 @@ class McpEndpointGatewayModel extends Base
             $rows[] = [
                 'name' => $endpoint['name'],
                 'group' => $endpoint['group'],
-                'enabled' => $this->isEnabled($userId, $endpoint['name']),
+                'enabled' => $enabled[$endpoint['name']],
             ];
         }
 

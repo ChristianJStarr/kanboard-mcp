@@ -7,6 +7,8 @@ use Kanboard\Plugin\ModelContextProtocol\Core\McpCatalog;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Kanboard\Plugin\ModelContextProtocol\Model\McpEndpointGatewayModel;
 use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
+use Psr\Log\AbstractLogger;
+use Psr\Log\LogLevel;
 
 abstract class McpTestCase extends Base
 {
@@ -58,6 +60,51 @@ abstract class McpTestCase extends Base
             'endpoint' => $endpoint,
             'enabled' => $enabled,
         ]));
+    }
+
+    /**
+     * Run version_4 on a database that is on the tokens-only schema 3.
+     */
+    protected function migrateFromTokenSchema(): void
+    {
+        $pdo = $this->container['db']->getConnection();
+        $pdo->exec('DROP TABLE ' . McpEndpointGatewayModel::TABLE);
+        \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($pdo);
+    }
+
+    /**
+     * SQLite only: inserting a grant row for this endpoint fails.
+     */
+    protected function failGrantInsert(string $endpoint): void
+    {
+        $pdo = $this->container['db']->getConnection();
+        $pdo->exec(
+            'CREATE TRIGGER mcp_test_fail_grant BEFORE INSERT ON ' . McpEndpointGatewayModel::TABLE
+            . ' WHEN NEW.endpoint = ' . $pdo->quote($endpoint)
+            . " BEGIN SELECT RAISE(ABORT, 'forced grant failure'); END"
+        );
+    }
+
+    /**
+     * Replace the logger with one that keeps error messages.
+     */
+    protected function recordErrors(): object
+    {
+        $logger = new class extends AbstractLogger {
+            /** @var string[] */
+            public array $errors = [];
+
+            public function log($level, $message, array $context = array())
+            {
+                if ($level === LogLevel::ERROR) {
+                    $this->errors[] = (string) $message;
+                }
+            }
+        };
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        return $logger;
     }
 
     protected function enableEveryCatalogEndpoint(int $userId): void

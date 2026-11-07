@@ -35,6 +35,9 @@ class McpAccess
     /** @var array<string,bool> */
     private array $capabilityCache = [];
 
+    /** @var array<int,string> Project roles read by capability scans  [project_id => role] */
+    private array $projectRoleCache = [];
+
     public function __construct($container, int $userId)
     {
         $this->container = $container;
@@ -76,7 +79,11 @@ class McpAccess
             return true;
         }
 
-        if ($capability === McpCatalog::CAP_TASK_WRITE || $capability === McpCatalog::CAP_TASK_DELETE) {
+        if ($capability === McpCatalog::CAP_TASK_DELETE) {
+            return $this->allowsCapability(McpCatalog::CAP_TASK_WRITE);
+        }
+
+        if ($capability === McpCatalog::CAP_TASK_WRITE) {
             return $this->isAppAdmin()
                 || $this->hasExactRoleOnAnyVisibleProject([
                     Role::PROJECT_MEMBER,
@@ -109,7 +116,7 @@ class McpAccess
     private function hasExactRoleOnAnyVisibleProject(array $roles): bool
     {
         foreach ($this->getVisibleProjectIds() as $projectId) {
-            if (in_array($this->getProjectRole($projectId), $roles, true)) {
+            if (in_array($this->getCachedProjectRole($projectId), $roles, true)) {
                 return true;
             }
         }
@@ -120,12 +127,24 @@ class McpAccess
     private function hasCustomRoleOnAnyVisibleProject(): bool
     {
         foreach ($this->getVisibleProjectIds() as $projectId) {
-            if ($this->isCustomProjectRole($this->getProjectRole($projectId))) {
+            if ($this->isCustomProjectRole($this->getCachedProjectRole($projectId))) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Capability scans only. Per-project checks keep reading the live role.
+     */
+    private function getCachedProjectRole(int $projectId): string
+    {
+        if (!array_key_exists($projectId, $this->projectRoleCache)) {
+            $this->projectRoleCache[$projectId] = $this->getProjectRole($projectId);
+        }
+
+        return $this->projectRoleCache[$projectId];
     }
 
     /**

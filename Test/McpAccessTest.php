@@ -4,7 +4,9 @@ require_once __DIR__ . '/McpTestCase.php';
 
 use Kanboard\Core\Security\Role;
 use Kanboard\Model\ProjectRoleRestrictionModel;
+use Kanboard\Model\ProjectUserRoleModel;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
+use Kanboard\Plugin\ModelContextProtocol\Core\McpCatalog;
 
 class McpAccessTest extends McpTestCase
 {
@@ -194,5 +196,32 @@ class McpAccessTest extends McpTestCase
         $restricted = new McpAccess($this->container, $userId);
         $this->assertFalse($restricted->canCreateTaskInColumn($projectId, 0));
         $this->assertFalse($restricted->canManageBoard($projectId));
+    }
+
+    public function testCapabilityChecksReadEachProjectRoleOnce(): void
+    {
+        $viewerId = $this->createUser('many-projects-viewer');
+        foreach (['Viewed 1', 'Viewed 2', 'Viewed 3'] as $name) {
+            $this->addMember($this->createProject($name), $viewerId, Role::PROJECT_VIEWER);
+        }
+
+        $roles = new class($this->container) extends ProjectUserRoleModel {
+            public int $calls = 0;
+
+            public function getUserRole($project_id, $user_id)
+            {
+                $this->calls++;
+
+                return parent::getUserRole($project_id, $user_id);
+            }
+        };
+        unset($this->container['projectUserRoleModel']);
+        $this->container['projectUserRoleModel'] = $roles;
+
+        $access = new McpAccess($this->container, $viewerId);
+        $this->assertFalse($access->allowsCapability(McpCatalog::CAP_TASK_WRITE));
+        $this->assertFalse($access->allowsCapability(McpCatalog::CAP_TASK_DELETE));
+        $this->assertFalse($access->allowsCapability(McpCatalog::CAP_BOARD));
+        $this->assertSame(3, $roles->calls);
     }
 }

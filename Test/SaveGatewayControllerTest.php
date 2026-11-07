@@ -155,6 +155,7 @@ class SaveGatewayControllerTest extends McpTestCase
     {
         $userId = $this->createUser('gateway-unknown');
         $this->login($userId);
+        $logger = $this->recordErrors();
         $response = $this->bindHttp([
             'csrf_token' => $this->container['token']->getReusableCSRFToken(),
             'gateway_save' => '1',
@@ -168,6 +169,29 @@ class SaveGatewayControllerTest extends McpTestCase
         $this->assertSame('Could not save MCP access', $this->flash()['failure']);
         $this->assertStringNotContainsString('not_a_tool', $this->flash()['failure']);
         $this->assertArrayNotHasKey('success', $this->flash());
+        $this->assertSame($this->integrationsUrl('config', $userId), $response->redirectUrl);
+        $this->assertSame([], $logger->errors);
+    }
+
+    public function testFailedUpsertIsLoggedAndWritesNothing(): void
+    {
+        $userId = $this->createUser('gateway-db-failure');
+        $this->login($userId);
+        $logger = $this->recordErrors();
+        $this->failGrantInsert('kanboard://users');
+        $response = $this->bindHttp([
+            'csrf_token' => $this->container['token']->getReusableCSRFToken(),
+            'gateway_save' => '1',
+            'target' => 'config',
+            'endpoints' => ['get_projects'],
+        ], []);
+
+        (new ModelContextProtocolController($this->container))->saveGateway();
+
+        $this->assertSame([], $this->grantRows($userId));
+        $this->assertSame('Could not save MCP access', $this->flash()['failure']);
+        $this->assertArrayNotHasKey('success', $this->flash());
+        $this->assertSame(['MCP access save failed'], $logger->errors);
         $this->assertSame($this->integrationsUrl('config', $userId), $response->redirectUrl);
     }
 

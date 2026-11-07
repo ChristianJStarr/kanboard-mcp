@@ -99,6 +99,12 @@ function version_4($pdo)
     // still need the token_plain removal from version_3.
     version_3($pdo);
 
+    // Those databases already ran the backfill. A second run would turn writes
+    // on for tokens created after that build.
+    if (mcp_sqlite_table_exists($pdo, 'mcp_endpoint_grants')) {
+        return;
+    }
+
     $pdo->exec('
         CREATE TABLE IF NOT EXISTS mcp_endpoint_grants (
             user_id  INTEGER NOT NULL,

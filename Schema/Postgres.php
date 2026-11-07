@@ -58,6 +58,12 @@ function version_4($pdo)
 {
     version_3($pdo);
 
+    // A grants table from an earlier build already holds the backfill. A second
+    // run would turn writes on for tokens created after that build.
+    if (mcp_postgres_table_exists($pdo, 'mcp_endpoint_grants')) {
+        return;
+    }
+
     $pdo->exec('
         CREATE TABLE IF NOT EXISTS mcp_endpoint_grants (
             user_id  INTEGER     NOT NULL,

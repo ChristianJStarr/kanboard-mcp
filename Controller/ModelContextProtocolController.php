@@ -7,6 +7,7 @@ use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -176,6 +177,9 @@ class ModelContextProtocolController extends BaseController
         try {
             $this->mcpEndpointGatewayModel->save($userId, $allowed, $posted);
         } catch (Throwable $exception) {
+            if (!$exception instanceof InvalidArgumentException) {
+                $this->logger->error('MCP access save failed', ['exception' => $exception]);
+            }
             $this->flash->failure(t('Could not save MCP access'));
             $this->redirectToIntegrations($target, $userId);
             return;

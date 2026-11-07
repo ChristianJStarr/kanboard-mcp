@@ -32,8 +32,8 @@ class McpEndpointGatewayModelTest extends McpTestCase
         $plain = $this->container['mcpTokenModel']->regenerateForUser($withToken);
         $hash = $this->tokenHash($withToken);
 
-        $this->runVersion3();
-        $this->runVersion3();
+        $this->migrateFromTokenSchema();
+        $this->runVersion4();
 
         $this->assertSame($this->writeEndpointNames(), $this->storedEndpoints($withToken));
         $this->assertSame([], $this->storedEndpoints($withoutToken));
@@ -53,11 +53,27 @@ class McpEndpointGatewayModelTest extends McpTestCase
         $this->assertCount(count($this->writeEndpointNames()), $this->grantRows($withToken));
     }
 
+    public function testVersion4LeavesAnExistingGrantsTableAlone(): void
+    {
+        $saved = $this->createUser('earlier-build-saved');
+        $fresh = $this->createUser('earlier-build-fresh');
+        $this->container['mcpTokenModel']->regenerateForUser($saved);
+        $this->container['mcpTokenModel']->regenerateForUser($fresh);
+        $this->insertGrant($saved, 'create_task', 0);
+
+        $this->runVersion4();
+
+        $this->assertSame([], $this->grantRows($fresh));
+        $this->assertFalse($this->gateway()->isEnabled($fresh, 'create_task'));
+        $this->assertCount(1, $this->grantRows($saved));
+        $this->assertSame(0, $this->enabledValue($saved, 'create_task'));
+    }
+
     public function testRegenerateKeepsGrantRows(): void
     {
         $userId = $this->createUser('regenerate-grants');
         $old = $this->container['mcpTokenModel']->regenerateForUser($userId);
-        $this->runVersion3();
+        $this->migrateFromTokenSchema();
         $before = $this->grantRows($userId);
         $this->assertNotEmpty($before);
 
@@ -170,6 +186,24 @@ class McpEndpointGatewayModelTest extends McpTestCase
         $this->assertNull($this->container['projectModel']->getByName('Should not exist'));
     }
 
+    public function testFailedUpsertRollsBackTheWholeSave(): void
+    {
+        $userId = $this->createUser('rollback-save');
+        $this->insertGrant($userId, 'get_projects', 1);
+        $before = $this->grantRows($userId);
+        $allowed = $this->gateway()->allowedNames($this->accessFor($userId));
+        $this->assertSame('kanboard://users', end($allowed));
+        $this->failGrantInsert('kanboard://users');
+
+        try {
+            $this->gateway()->save($userId, $allowed, []);
+            $this->fail('Expected the failed upsert to throw');
+        } catch (RuntimeException $exception) {
+            $this->assertSame($before, $this->grantRows($userId));
+            $this->assertTrue($this->gateway()->isEnabled($userId, 'get_projects'));
+        }
+    }
+
     public function testOffIsStoredAndAMissingRowUsesTheCatalogDefault(): void
     {
         $userId = $this->createUser('explicit-off');
@@ -233,7 +267,7 @@ class McpEndpointGatewayModelTest extends McpTestCase
             ->findOneColumn('token');
     }
 
-    private function runVersion3(): void
+    private function runVersion4(): void
     {
         \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($this->container['db']->getConnection());
     }
