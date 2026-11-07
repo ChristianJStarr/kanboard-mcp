@@ -18,6 +18,10 @@
     ?>
 
     <div class="form-group" id="mcp-url-token-setting">
+        <input type="hidden"
+               name="mcp_disable_url_token"
+               value="0"
+               form="mcp-url-token-form">
         <label>
             <input type="checkbox"
                    name="mcp_disable_url_token"
