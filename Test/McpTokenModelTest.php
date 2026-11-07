@@ -11,12 +11,13 @@ class McpTokenModelTest extends McpTestCase
         $userId = $this->createUser('token-owner');
         $plain = $this->container['mcpTokenModel']->regenerateForUser($userId);
 
-        $this->assertSame($plain, $this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($userId));
         $this->assertSame($userId, $this->container['mcpTokenModel']->authenticate($plain));
 
         $row = $this->container['db']->table(McpTokenModel::TABLE)->eq('user_id', $userId)->findOne();
         $this->assertSame(hash('sha256', $plain), $row['token']);
         $this->assertNotSame($plain, $row['token']);
+        $this->assertArrayNotHasKey('token_plain', $row);
     }
 
     public function testAuthenticateRejectsTheStoredHashItself(): void
@@ -71,17 +72,20 @@ class McpTokenModelTest extends McpTestCase
         $this->assertNotSame($aliceOld, $aliceNew);
         $this->assertNull($this->container['mcpTokenModel']->authenticate($aliceOld));
         $this->assertSame($alice, $this->container['mcpTokenModel']->authenticate($aliceNew));
-        $this->assertSame($bobToken, $this->container['mcpTokenModel']->getTokenForUser($bob));
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($bob));
         $this->assertSame($bob, $this->container['mcpTokenModel']->authenticate($bobToken));
     }
 
-    public function testGetTokenForUserReturnsPlaintext(): void
+    public function testRevealIsShownOnceAndIsNotStored(): void
     {
         $userId = $this->createUser('plain-display');
-        $this->assertNull($this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->assertFalse($this->container['mcpTokenModel']->hasToken($userId));
 
         $plain = $this->container['mcpTokenModel']->regenerateForUser($userId);
-        $this->assertSame($plain, $this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->container['mcpTokenModel']->rememberReveal($userId, $plain);
+
+        $this->assertSame($plain, $this->container['mcpTokenModel']->takeReveal($userId));
+        $this->assertNull($this->container['mcpTokenModel']->takeReveal($userId));
         $this->assertSame(64, strlen($plain));
     }
 }

@@ -115,11 +115,12 @@ Every tool call is authorized against the token user's real Kanboard permissions
 |------|--------------------------|
 | Project Viewer | Read-only: `get_tasks`, `get_task_details`, `get_columns`, `get_categories`, `get_swimlanes`, `get_task_comments` |
 | Project Member | Viewer rights plus task create/update/move/comment/assign/due-date. Delete only tasks they created. |
+| Custom project role | Same task access as a member, minus that role's Kanboard restrictions. |
 | Project Manager | Member rights plus delete any task, and full column/category/swimlane CRUD. |
 | App Admin | Project Manager on every active project. Also `create_project` and `get_users` across all users. |
 | App Manager | Can `create_project`. Project access follows normal membership. |
 
-- `get_projects` and `kanboard://projects` return **only** the boards the token user can see.
+- `get_projects` and `kanboard://projects` return **only** the boards the token user can see. The project public-access `token` is omitted.
 - `get_users` / `kanboard://users` return only `id`, `username`, `name` — no password hashes, API tokens, or 2FA secrets.
 - Object IDs from other users' projects return a generic `Forbidden` error to prevent oracle attacks.
 - The token URL is never written to server-side logs. `Referrer-Policy: no-referrer` is sent on every MCP response.
@@ -172,6 +173,9 @@ A fresh app-admin token shows the read endpoints until writes are turned on. An 
 
 ## Changelog
 
+### v1.2.2
+- **Review fixes**: the gateway branch includes the 1.1.3 authorization fixes. Schema version 4 removes any leftover `token_plain` value and then creates the endpoint grants.
+
 ### v1.2.1
 - **Integrations submit**: Generate Token and Save access post forms rendered outside Kanboard's settings form, so one creates a token and the other saves grants. Both redirects return to the core integrations page and do not name this plugin.
 
@@ -179,6 +183,14 @@ A fresh app-admin token shows the read endpoints until writes are turned on. An 
 - **Endpoint gateway**: Each user can enable or disable the MCP endpoints their role allows. Old tokens keep writes on via the migration backfill. New tokens start with writes off.
 - **Unknown versus forbidden**: A role-hidden or unknown tool returns `Unknown tool`. A role-allowed endpoint that is off returns `Forbidden` and is not dispatched.
 - **List refresh**: `listChanged` stays false. Clients should reconnect so `tools/list` matches the toggles. `tools/call` enforces the switch without waiting for that refresh.
+
+### v1.1.3
+- **Comment visibility**: `get_task_comments` follows Kanboard's application-role visibility rules for the token user.
+- **Project creation**: `create_project` adds the token user as the project owner and manager.
+- **Token storage**: only the SHA-256 hash is stored. The plaintext is shown once after generation.
+- **Custom roles**: a custom project role can change tasks, except where that role has a Kanboard restriction.
+- **Project payload**: project listings no longer include the public-access token.
+- **MySQL upgrade**: replacing `mcp_tokens` can be run again if the table was already dropped.
 
 ### v1.1.2
 - **Integrations submit**: Generate Token posts a form rendered outside Kanboard's settings form, so the button creates a token instead of saving settings. The redirect returns to the core integrations page and does not name this plugin.

@@ -235,6 +235,6 @@ class McpEndpointGatewayModelTest extends McpTestCase
 
     private function runVersion3(): void
     {
-        \Kanboard\Plugin\ModelContextProtocol\Schema\version_3($this->container['db']->getConnection());
+        \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($this->container['db']->getConnection());
     }
 }

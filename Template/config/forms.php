@@ -18,7 +18,7 @@ $saveUrl = $this->helper->url->to(
 $csrfToken = $this->task->token->getReusableCSRFToken();
 $mcpTarget = $this->app->getRouterController() === 'UserViewController' ? 'user' : 'config';
 $mcpUserId = (int) $this->task->userSession->getId();
-$hasToken = $this->task->mcpTokenModel->getTokenForUser($mcpUserId) !== null;
+$hasToken = $this->task->mcpTokenModel->hasToken($mcpUserId);
 ?>
 <form id="mcp-token-form"
       method="post"

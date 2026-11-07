@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Core;
 
 use Kanboard\Core\Security\Role;
+use Kanboard\Model\ColumnRestrictionModel;
+use Kanboard\Model\ProjectRoleRestrictionModel;
 
 /**
  * Per-user permission gate for MCP tool calls.
@@ -75,10 +77,12 @@ class McpAccess
         }
 
         if ($capability === McpCatalog::CAP_TASK_WRITE || $capability === McpCatalog::CAP_TASK_DELETE) {
-            return $this->isAppAdmin() || $this->hasExactRoleOnAnyVisibleProject([
-                Role::PROJECT_MEMBER,
-                Role::PROJECT_MANAGER,
-            ]);
+            return $this->isAppAdmin()
+                || $this->hasExactRoleOnAnyVisibleProject([
+                    Role::PROJECT_MEMBER,
+                    Role::PROJECT_MANAGER,
+                ])
+                || $this->hasCustomRoleOnAnyVisibleProject();
         }
 
         if ($capability === McpCatalog::CAP_BOARD) {
@@ -95,7 +99,7 @@ class McpAccess
     }
 
     /**
-     * Exact role match only. Custom project roles stay read-only.
+     * Exact role match only. Custom project roles are handled separately.
      *
      * App-admins are handled by the caller via isAppAdmin(). They are project
      * managers through getProjectRole() even when they have no membership.
@@ -106,6 +110,17 @@ class McpAccess
     {
         foreach ($this->getVisibleProjectIds() as $projectId) {
             if (in_array($this->getProjectRole($projectId), $roles, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasCustomRoleOnAnyVisibleProject(): bool
+    {
+        foreach ($this->getVisibleProjectIds() as $projectId) {
+            if ($this->isCustomProjectRole($this->getProjectRole($projectId))) {
                 return true;
             }
         }
@@ -173,12 +188,110 @@ class McpAccess
 
     /**
      * Return true when the user holds at least PROJECT_MEMBER on the project.
-     * Viewer + no role → false.
+     * A custom project role is a member minus restrictions. Viewer and no role are false.
      */
     public function canWriteToProject(int $projectId): bool
     {
         $role = $this->getProjectRole($projectId);
-        return $role === Role::PROJECT_MEMBER || $role === Role::PROJECT_MANAGER;
+
+        return $role === Role::PROJECT_MEMBER
+            || $role === Role::PROJECT_MANAGER
+            || $this->isCustomProjectRole($role);
+    }
+
+    /**
+     * Custom roles follow column and project creation restrictions.
+     * Built-in member and manager roles are not restricted here.
+     */
+    public function canCreateTaskInColumn(int $projectId, int $columnId): bool
+    {
+        if (!$this->canWriteToProject($projectId)) {
+            return false;
+        }
+
+        $role = $this->getProjectRole($projectId);
+        if (!$this->isCustomProjectRole($role)) {
+            return true;
+        }
+
+        if ($columnId > 0) {
+            $columnRules = $this->container['columnRestrictionModel']->getAllByRole($projectId, $role);
+            foreach ($columnRules as $restriction) {
+                if ((int) ($restriction['column_id'] ?? 0) !== $columnId) {
+                    continue;
+                }
+                if (($restriction['rule'] ?? '') === ColumnRestrictionModel::RULE_ALLOW_TASK_CREATION) {
+                    return true;
+                }
+                if (($restriction['rule'] ?? '') === ColumnRestrictionModel::RULE_BLOCK_TASK_CREATION) {
+                    return false;
+                }
+            }
+        }
+
+        return !$this->hasProjectRestriction($projectId, $role, ProjectRoleRestrictionModel::RULE_TASK_CREATION);
+    }
+
+    /**
+     * Custom roles with the task_move restriction cannot move tasks.
+     */
+    public function canMoveTask(int $projectId): bool
+    {
+        if (!$this->canWriteToProject($projectId)) {
+            return false;
+        }
+
+        $role = $this->getProjectRole($projectId);
+        if (!$this->isCustomProjectRole($role)) {
+            return true;
+        }
+
+        return !$this->hasProjectRestriction($projectId, $role, ProjectRoleRestrictionModel::RULE_TASK_MOVE);
+    }
+
+    /**
+     * Custom roles with the task_change_assignee restriction cannot assign tasks.
+     */
+    public function canAssignTask(int $projectId): bool
+    {
+        if (!$this->canWriteToProject($projectId)) {
+            return false;
+        }
+
+        $role = $this->getProjectRole($projectId);
+        if (!$this->isCustomProjectRole($role)) {
+            return true;
+        }
+
+        return !$this->hasProjectRestriction(
+            $projectId,
+            $role,
+            ProjectRoleRestrictionModel::RULE_TASK_CHANGE_ASSIGNEE
+        );
+    }
+
+    /**
+     * Custom roles with task_update_assigned can update only tasks assigned to them.
+     *
+     * @param array<string,mixed> $task
+     */
+    public function canUpdateTask(array $task): bool
+    {
+        $projectId = (int) $task['project_id'];
+        if (!$this->canWriteToProject($projectId)) {
+            return false;
+        }
+
+        $role = $this->getProjectRole($projectId);
+        if (!$this->isCustomProjectRole($role)) {
+            return true;
+        }
+
+        if ($this->hasProjectRestriction($projectId, $role, ProjectRoleRestrictionModel::RULE_TASK_UPDATE_ASSIGNED)) {
+            return (int) ($task['owner_id'] ?? 0) === $this->userId;
+        }
+
+        return true;
     }
 
     /**
@@ -193,20 +306,28 @@ class McpAccess
      * Return true when the user may delete the given task.
      *
      * - Project manager: delete any task in the project.
-     * - Project member: only tasks they created.
-     * - Viewer / no role / custom role: never.
+     * - Project member and custom role: only tasks they created.
+     * - Custom role with task_remove: never.
+     * - Viewer / no role: never.
      *
      * @param array<string,mixed> $task  Row from taskFinderModel->getById()
      */
     public function canDeleteTask(array $task): bool
     {
-        $role = $this->getProjectRole((int) $task['project_id']);
+        $projectId = (int) $task['project_id'];
+        $role = $this->getProjectRole($projectId);
 
         if ($role === Role::PROJECT_MANAGER) {
             return true;
         }
 
-        if ($role === Role::PROJECT_MEMBER) {
+        if ($this->isCustomProjectRole($role)
+            && $this->hasProjectRestriction($projectId, $role, ProjectRoleRestrictionModel::RULE_TASK_SUPPRESSION)
+        ) {
+            return false;
+        }
+
+        if ($role === Role::PROJECT_MEMBER || $this->isCustomProjectRole($role)) {
             return (int) ($task['creator_id'] ?? 0) === $this->userId;
         }
 
@@ -320,6 +441,31 @@ class McpAccess
 
         $role = $this->container['projectUserRoleModel']->getUserRole($projectId, $this->userId);
         return $role ?? '';
+    }
+
+    public function applicationRole(): string
+    {
+        return $this->getAppRole();
+    }
+
+    private function isCustomProjectRole(string $role): bool
+    {
+        return $role !== ''
+            && $role !== Role::PROJECT_MANAGER
+            && $role !== Role::PROJECT_MEMBER
+            && $role !== Role::PROJECT_VIEWER;
+    }
+
+    private function hasProjectRestriction(int $projectId, string $role, string $rule): bool
+    {
+        $rows = $this->container['projectRoleRestrictionModel']->getAllByRole($projectId, $role);
+        foreach ($rows as $restriction) {
+            if (($restriction['rule'] ?? '') === $rule) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

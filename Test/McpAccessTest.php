@@ -3,6 +3,7 @@
 require_once __DIR__ . '/McpTestCase.php';
 
 use Kanboard\Core\Security\Role;
+use Kanboard\Model\ProjectRoleRestrictionModel;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
 
 class McpAccessTest extends McpTestCase
@@ -172,5 +173,26 @@ class McpAccessTest extends McpTestCase
         $this->assertFalse($access->canCreateProject());
         $this->assertSame([$visible], $visibleIds);
         $this->assertNotContains($hidden, $visibleIds);
+    }
+
+    public function testCustomRoleCanWriteUnlessARestrictionBlocksIt(): void
+    {
+        $projectId = $this->createProject('Restricted custom');
+        $userId = $this->createUser('restricted-dev');
+        $roleId = $this->container['projectRoleModel']->create($projectId, 'Developer');
+        $this->addMember($projectId, $userId, 'Developer');
+
+        $access = new McpAccess($this->container, $userId);
+        $this->assertTrue($access->canWriteToProject($projectId));
+        $this->assertTrue($access->canCreateTaskInColumn($projectId, 0));
+
+        $this->assertNotFalse($this->container['projectRoleRestrictionModel']->create(
+            $projectId,
+            (int) $roleId,
+            ProjectRoleRestrictionModel::RULE_TASK_CREATION
+        ));
+        $restricted = new McpAccess($this->container, $userId);
+        $this->assertFalse($restricted->canCreateTaskInColumn($projectId, 0));
+        $this->assertFalse($restricted->canManageBoard($projectId));
     }
 }

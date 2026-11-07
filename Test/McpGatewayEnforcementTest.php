@@ -102,7 +102,7 @@ class McpGatewayEnforcementTest extends McpTestCase
             ->eq('user_id', $managerId)
             ->findOneColumn('token');
 
-        \Kanboard\Plugin\ModelContextProtocol\Schema\version_3($this->container['db']->getConnection());
+        \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($this->container['db']->getConnection());
 
         $names = $this->toolNamesFrom($this->mcpRequest($managerId, 'tools/list'));
         $this->assertContains('create_task', $names);
@@ -266,7 +266,7 @@ class McpGatewayEnforcementTest extends McpTestCase
 
         $this->assertFalse($response['result']['capabilities']['tools']['listChanged']);
         $this->assertFalse($response['result']['capabilities']['resources']['listChanged']);
-        $this->assertSame('1.2.1', $response['result']['serverInfo']['version']);
+        $this->assertSame('1.2.2', $response['result']['serverInfo']['version']);
     }
 
     /**

@@ -89,7 +89,7 @@ class SaveGatewayControllerTest extends McpTestCase
         $this->assertSame([], $this->grantRows($userId));
         $this->assertArrayNotHasKey('success', $this->flash());
         $this->assertArrayNotHasKey('failure', $this->flash());
-        $this->assertSame($plain, $this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->assertSame($userId, $this->container['mcpTokenModel']->authenticate($plain));
         $this->assertSame($this->integrationsUrl('config', $userId), $response->redirectUrl);
     }
 
@@ -256,7 +256,7 @@ class SaveGatewayControllerTest extends McpTestCase
         $this->assertArrayNotHasKey('create_project', $stored);
         $this->assertArrayNotHasKey('create_column', $stored);
         $this->assertSame('MCP access saved', $this->flash()['success']);
-        $this->assertSame($plain, $this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->assertSame($userId, $this->container['mcpTokenModel']->authenticate($plain));
         $this->assertSame($this->integrationsUrl('user', $userId), $response->redirectUrl);
         $this->assertNotSame(
             $this->integrationsUrl('user', $userId + 1),

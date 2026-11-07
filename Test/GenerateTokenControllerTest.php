@@ -20,7 +20,7 @@ class GenerateTokenControllerTest extends McpTestCase
 
         $this->assertSame(405, $response->status);
         $this->assertNull($response->redirectUrl);
-        $this->assertNull($this->container['mcpTokenModel']->getTokenForUser($userId));
+        $this->assertFalse($this->container['mcpTokenModel']->hasToken($userId));
     }
 
     public function testPostWithoutReusableCsrfThrowsAccessForbidden(): void
@@ -35,7 +35,7 @@ class GenerateTokenControllerTest extends McpTestCase
             $controller->generateToken();
             $this->fail('Expected AccessForbiddenException');
         } catch (AccessForbiddenException $exception) {
-            $this->assertNull($this->container['mcpTokenModel']->getTokenForUser($userId));
+            $this->assertFalse($this->container['mcpTokenModel']->hasToken($userId));
         }
     }
 
@@ -55,7 +55,7 @@ class GenerateTokenControllerTest extends McpTestCase
             $controller->generateToken();
             $this->fail('Expected AccessForbiddenException');
         } catch (AccessForbiddenException $exception) {
-            $this->assertNull($this->container['mcpTokenModel']->getTokenForUser($userId));
+            $this->assertFalse($this->container['mcpTokenModel']->hasToken($userId));
         }
     }
 
@@ -74,10 +74,11 @@ class GenerateTokenControllerTest extends McpTestCase
         $controller = new ModelContextProtocolController($this->container);
         $controller->generateToken();
 
-        $rotated = $this->container['mcpTokenModel']->getTokenForUser($sessionUser);
+        $rotated = $this->container['mcpTokenModel']->takeReveal($sessionUser);
         $this->assertNotNull($rotated);
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($sessionUser));
         $this->assertSame($sessionUser, $this->container['mcpTokenModel']->authenticate($rotated));
-        $this->assertSame($otherToken, $this->container['mcpTokenModel']->getTokenForUser($otherUser));
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($otherUser));
         $this->assertSame($otherUser, $this->container['mcpTokenModel']->authenticate($otherToken));
         $this->assertSame($this->integrationsUrl('config', $sessionUser), $response->redirectUrl);
         $this->assertTrue($response->redirectSelf);
@@ -102,10 +103,11 @@ class GenerateTokenControllerTest extends McpTestCase
         $controller = new ModelContextProtocolController($this->container);
         $controller->generateToken();
 
-        $rotated = $this->container['mcpTokenModel']->getTokenForUser($sessionUser);
+        $rotated = $this->container['mcpTokenModel']->takeReveal($sessionUser);
         $this->assertNotNull($rotated);
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($sessionUser));
         $this->assertSame($sessionUser, $this->container['mcpTokenModel']->authenticate($rotated));
-        $this->assertSame($otherToken, $this->container['mcpTokenModel']->getTokenForUser($otherUser));
+        $this->assertTrue($this->container['mcpTokenModel']->hasToken($otherUser));
         $this->assertSame(
             $this->integrationsUrl('user', $sessionUser),
             $this->container['response']->redirectUrl

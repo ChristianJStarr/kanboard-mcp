@@ -4,6 +4,7 @@ require_once __DIR__ . '/McpTestCase.php';
 
 use Kanboard\Core\Security\Role;
 use Kanboard\Model\CommentModel;
+use Kanboard\Model\ProjectRoleRestrictionModel;
 use Kanboard\Model\TaskModel;
 
 class McpServerAuthorizationTest extends McpTestCase
@@ -123,6 +124,11 @@ class McpServerAuthorizationTest extends McpTestCase
             'name' => 'Manager project',
         ]));
         $this->assertGreaterThan(0, (int) $manager['project_id']);
+
+        $project = $this->container['projectModel']->getById((int) $manager['project_id']);
+        $this->assertSame($managerId, (int) $project['owner_id']);
+        $access = new \Kanboard\Plugin\ModelContextProtocol\Core\McpAccess($this->container, $managerId);
+        $this->assertContains((int) $manager['project_id'], $access->getVisibleProjectIds());
     }
 
     public function testGetUsersRedactsToIdUsernameName(): void
@@ -229,5 +235,101 @@ class McpServerAuthorizationTest extends McpTestCase
             'project_id' => $hidden,
         ]));
         $this->assertNull($this->container['projectModel']->getByName('Should not exist'));
+    }
+
+    public function testGetProjectsOmitsThePublicAccessToken(): void
+    {
+        $projectId = $this->createProject('Shared secret');
+        $memberId = $this->createUser('project-reader');
+        $this->addMember($projectId, $memberId, Role::PROJECT_MEMBER);
+        $this->assertTrue($this->container['projectModel']->update([
+            'id' => $projectId,
+            'token' => 'public-secret-value',
+        ]));
+
+        $projects = $this->decodeToolResult($this->callTool($memberId, 'get_projects'));
+        $this->assertNotEmpty($projects);
+        foreach ($projects as $project) {
+            $this->assertArrayNotHasKey('token', $project);
+            $this->assertStringNotContainsString('public-secret-value', json_encode($project));
+        }
+    }
+
+    public function testAppUserDoesNotReceiveManagerComments(): void
+    {
+        $projectId = $this->createProject('Comment board');
+        $userId = $this->createUser('comment-reader', Role::APP_USER);
+        $managerId = $this->createUser('comment-manager', Role::APP_MANAGER);
+        $this->addMember($projectId, $userId, Role::PROJECT_VIEWER);
+        $this->addMember($projectId, $managerId, Role::PROJECT_MANAGER);
+        $taskId = (int) $this->container['taskCreationModel']->create([
+            'title' => 'Commented',
+            'project_id' => $projectId,
+            'creator_id' => $managerId,
+        ]);
+        $hiddenId = (int) $this->container['commentModel']->create([
+            'task_id' => $taskId,
+            'user_id' => $managerId,
+            'comment' => 'manager only',
+            'visibility' => Role::APP_MANAGER,
+        ]);
+        $publicId = (int) $this->container['commentModel']->create([
+            'task_id' => $taskId,
+            'user_id' => $managerId,
+            'comment' => 'everyone',
+            'visibility' => Role::APP_USER,
+        ]);
+
+        $seen = $this->decodeToolResult($this->callTool($userId, 'get_task_comments', [
+            'task_id' => $taskId,
+        ]));
+        $ids = array_map(static function ($row) {
+            return (int) $row['id'];
+        }, $seen);
+        $this->assertContains($publicId, $ids);
+        $this->assertNotContains($hiddenId, $ids);
+
+        $managerSeen = $this->decodeToolResult($this->callTool($managerId, 'get_task_comments', [
+            'task_id' => $taskId,
+        ]));
+        $managerIds = array_map(static function ($row) {
+            return (int) $row['id'];
+        }, $managerSeen);
+        $this->assertContains($hiddenId, $managerIds);
+    }
+
+    public function testCustomRoleCannotCreateWhenRestricted(): void
+    {
+        $projectId = $this->createProject('Custom role board');
+        $userId = $this->createUser('custom-dev');
+        $roleId = $this->container['projectRoleModel']->create($projectId, 'Developer');
+        $this->assertNotFalse($roleId);
+        $this->assertNotFalse($this->container['projectRoleRestrictionModel']->create(
+            $projectId,
+            (int) $roleId,
+            ProjectRoleRestrictionModel::RULE_TASK_CREATION
+        ));
+        $this->addMember($projectId, $userId, 'Developer');
+        $this->enableEndpoints($userId, ['create_task']);
+
+        $this->assertForbiddenTool($this->callTool($userId, 'create_task', [
+            'project_id' => $projectId,
+            'title' => 'Blocked',
+        ]));
+    }
+
+    public function testCustomRoleCanCreateWithoutRestriction(): void
+    {
+        $projectId = $this->createProject('Open custom role');
+        $userId = $this->createUser('custom-writer');
+        $this->assertNotFalse($this->container['projectRoleModel']->create($projectId, 'Developer'));
+        $this->addMember($projectId, $userId, 'Developer');
+        $this->enableEndpoints($userId, ['create_task']);
+
+        $created = $this->decodeToolResult($this->callTool($userId, 'create_task', [
+            'project_id' => $projectId,
+            'title' => 'Allowed',
+        ]));
+        $this->assertGreaterThan(0, (int) $created['task_id']);
     }
 }

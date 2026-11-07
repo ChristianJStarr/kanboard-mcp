@@ -17,32 +17,56 @@ class McpTokenModel extends Base
 {
     const TABLE = 'mcp_tokens';
 
-    /**
-     * Return the plaintext token for a user, or null when none has been minted yet.
-     *
-     * The database only stores the SHA-256 hash; this column (`token_plain`)
-     * stores the one-time plaintext value so the UI can display it.
-     * It is functionally a cached copy of the last value returned by
-     * regenerateForUser(); it is NOT used for authentication.
-     *
-     * @param  int $userId
-     * @return string|null
-     */
-    public function getTokenForUser(int $userId): ?string
-    {
-        $value = $this->db->table(self::TABLE)
-            ->eq('user_id', $userId)
-            ->findOneColumn('token_plain');
+    public const REVEAL_SESSION_KEY = 'mcp_token_reveal';
 
-        return $value ?: null;
+    /**
+     * Return true when this user already has a token row.
+     * The plaintext is not stored.
+     */
+    public function hasToken(int $userId): bool
+    {
+        return $this->db->table(self::TABLE)
+            ->eq('user_id', $userId)
+            ->exists();
+    }
+
+    /**
+     * Keep the new plaintext in the session until the integrations page reads it once.
+     */
+    public function rememberReveal(int $userId, string $plainToken): void
+    {
+        session_set(self::REVEAL_SESSION_KEY, [
+            'user_id' => $userId,
+            'token'   => $plainToken,
+        ]);
+    }
+
+    /**
+     * Return the plaintext for this user and remove it from the session.
+     */
+    public function takeReveal(int $userId): ?string
+    {
+        if (!session_exists(self::REVEAL_SESSION_KEY)) {
+            return null;
+        }
+
+        $value = session_get(self::REVEAL_SESSION_KEY);
+        session_remove(self::REVEAL_SESSION_KEY);
+
+        if (!is_array($value) || (int) ($value['user_id'] ?? 0) !== $userId) {
+            return null;
+        }
+
+        $token = $value['token'] ?? '';
+
+        return is_string($token) && $token !== '' ? $token : null;
     }
 
     /**
      * Create or replace the token for a user.
      *
-     * Stores a SHA-256 hash in `token` (used for authentication) and the
-     * plaintext in `token_plain` (used only for display on the integrations
-     * page).  A delete-then-insert pattern avoids needing DB-specific UPSERT.
+     * Stores only the SHA-256 hash. The plaintext is the return value and is
+     * shown once by the caller. A delete-then-insert avoids a DB-specific UPSERT.
      *
      * @param  int    $userId
      * @return string The new plaintext token value.
@@ -58,10 +82,9 @@ class McpTokenModel extends Base
         $this->db->table(self::TABLE)->eq('user_id', $userId)->remove();
 
         $inserted = $this->db->table(self::TABLE)->insert([
-            'user_id'     => $userId,
-            'token'       => $hashToken,
-            'token_plain' => $plainToken,
-            'created_at'  => time(),
+            'user_id'    => $userId,
+            'token'      => $hashToken,
+            'created_at' => time(),
         ]);
 
         if (!$inserted) {
