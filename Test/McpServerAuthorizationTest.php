@@ -335,6 +335,71 @@ class McpServerAuthorizationTest extends McpTestCase
         $this->assertContains($hiddenId, $managerIds);
     }
 
+    public function testGetTaskCommentsOmitsProfilePii(): void
+    {
+        $projectId = $this->createProject('Comment PII board');
+        $authorId = $this->createUser('pii-author', Role::APP_USER, 'PII Author');
+        $readerId = $this->createUser('pii-reader');
+        $this->addMember($projectId, $authorId, Role::PROJECT_MEMBER);
+        $this->addMember($projectId, $readerId, Role::PROJECT_VIEWER);
+
+        $this->assertTrue($this->container['db']->table('users')->eq('id', $authorId)->update([
+            'email' => 'pii-author@example.com',
+            'avatar_path' => 'uploads/avatars/secret-face.png',
+        ]));
+
+        $taskId = (int) $this->container['taskCreationModel']->create([
+            'title' => 'Commented PII',
+            'project_id' => $projectId,
+            'creator_id' => $authorId,
+        ]);
+        $commentId = (int) $this->container['commentModel']->create([
+            'task_id' => $taskId,
+            'user_id' => $authorId,
+            'comment' => 'visible body',
+            'visibility' => Role::APP_USER,
+        ]);
+
+        $raw = $this->container['commentModel']->getAll($taskId);
+        $this->assertSame('pii-author@example.com', $raw[0]['email']);
+        $this->assertSame('uploads/avatars/secret-face.png', $raw[0]['avatar_path']);
+
+        $seen = $this->decodeToolResult($this->callTool($readerId, 'get_task_comments', [
+            'task_id' => $taskId,
+        ]));
+        $this->assertCount(1, $seen);
+        $this->assertSame($commentId, (int) $seen[0]['id']);
+        $this->assertSame($taskId, (int) $seen[0]['task_id']);
+        $this->assertSame($authorId, (int) $seen[0]['user_id']);
+        $this->assertSame('pii-author', $seen[0]['username']);
+        $this->assertSame('PII Author', $seen[0]['name']);
+        $this->assertSame('visible body', $seen[0]['comment']);
+        $this->assertArrayNotHasKey('email', $seen[0]);
+        $this->assertArrayNotHasKey('avatar_path', $seen[0]);
+        $this->assertArrayNotHasKey('password', $seen[0]);
+
+        $encoded = json_encode($seen);
+        $this->assertIsString($encoded);
+        $this->assertStringNotContainsString('pii-author@example.com', $encoded);
+        $this->assertStringNotContainsString('secret-face.png', $encoded);
+
+        $allowed = [
+            'id',
+            'task_id',
+            'user_id',
+            'username',
+            'name',
+            'comment',
+            'date_creation',
+            'date_modification',
+            'visibility',
+        ];
+        sort($allowed);
+        $keys = array_keys($seen[0]);
+        sort($keys);
+        $this->assertSame($allowed, $keys);
+    }
+
     public function testCustomRoleCannotCreateWhenRestricted(): void
     {
         $projectId = $this->createProject('Custom role board');

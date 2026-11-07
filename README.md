@@ -73,16 +73,36 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 1. **Download & Extract**: Copy the `ModelContextProtocol` folder to your Kanboard `plugins/` directory.
 2. **Activate Plugin**: Access Kanboard as administrator → **Settings** → **Plugins** → Enable MCP Plugin.
 3. **Get your token**: Go to **Settings** → **Integrations** (admins) **or** your user profile → **Integrations** (all users). Click **Autogenerar** (or **Generate Token** on first use).
-4. **Copy the MCP URL**: The configuration block shows the full URL with your token already embedded.
+4. **Copy the MCP configuration**: The token is shown **once**. Copy the **Authorization header** client block (server URL **without** a token, plus `headers.Authorization: Bearer …`). A URL that embeds `&token=` is also shown for older clients; prefer the header.
 
 > Each user generates their own token independently. An admin looking at another user's profile does **not** see that user's token.
 
-### MCP Server URL Format
+### Connecting an MCP client
+
+**Recommended (spec-compliant):** send the token as `Authorization: Bearer`. The URL must **not** include the token.
+
+```json
+{
+  "mcpServers": {
+    "kanboard": {
+      "url": "https://your-kanboard.com/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+**Compatibility:** some clients only accept a URL. That form puts the secret in the query string:
+
 ```
 https://your-kanboard.com/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=YOUR_TOKEN
 ```
 
-The token can also be sent as a `Authorization: Bearer YOUR_TOKEN` header (preferred for programmatic clients).
+Web servers and reverse proxies often write the full request URL, including `?token=`, to access logs. Do not treat this path as private.
+
+Administrators can check **Disable token in URL (query string)** on **Settings → Integrations**. While that setting is on, `?token=` is ignored and only `Authorization: Bearer` authenticates. The compatibility block stays visible so you can see why an old URL stopped working.
 
 ## AI Assistant Integration
 
@@ -122,12 +142,14 @@ Every tool call is authorized against the token user's real Kanboard permissions
 - `get_projects` and `kanboard://projects` return **only** the boards the token user can see. The project public-access `token` is omitted.
 - `get_users` / `kanboard://users` return only `id`, `username`, `name` — no password hashes, API tokens, or 2FA secrets.
 - Object IDs from other users' projects return a generic `Forbidden` error to prevent oracle attacks.
-- The token URL is never written to server-side logs. `Referrer-Policy: no-referrer` is sent on every MCP response.
+- `get_task_comments` returns comment id, task id, user id, username, name, body, dates, and visibility — not email, avatar paths, or other profile PII.
+- `Referrer-Policy: no-referrer` is sent on every MCP response so the token is not forwarded to third-party origins via Referer. That does **not** stop your own web server or proxy from logging a `?token=` URL.
 
 ### Token Transport
-- Send the token in the `Authorization: Bearer` header when possible (not stored in server logs).
-- The `token` query-string parameter is also accepted for MCP clients that embed it in the URL.
-- If both header and query-string tokens are present and they differ, the request is rejected.
+- **Preferred:** `Authorization: Bearer YOUR_TOKEN`. Also accepted from `REDIRECT_HTTP_AUTHORIZATION` when PHP-CGI/rewrite does not populate `HTTP_AUTHORIZATION`.
+- **Compatibility:** the `token` query-string parameter, unless an administrator has disabled URL tokens.
+- If URL tokens are allowed and both header and query-string tokens are present and they differ, the request is rejected.
+- If URL tokens are disabled, `$_GET['token']` is ignored. A valid Bearer header still authenticates.
 
 ## Technical Specifications
 
@@ -143,11 +165,17 @@ Every tool call is authorized against the token user's real Kanboard permissions
 
 ### API Endpoints
 - **Main Handler**: `/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol`
-- **Authentication**: Per-user bearer token (header or query string)
+- **Authentication**: Per-user bearer token (`Authorization: Bearer`, optionally `?token=` when URL tokens are allowed)
 - **Content-Type**: `application/json`
 - **Methods**: POST for all MCP operations
 
 ## Changelog
+
+### v1.1.4
+- **Header configuration**: Integrations shows the spec-compliant MCP client block (URL without a token + `Authorization: Bearer`) and a compatibility URL-with-token block, with a warning that query-string tokens can appear in access logs.
+- **Disable URL tokens**: Administrators can reject `?token=` from Settings → Integrations. Header authentication is unchanged. The setting survives token rotation.
+- **CGI Authorization**: Bearer tokens are read from `HTTP_AUTHORIZATION`, then `REDIRECT_HTTP_AUTHORIZATION`.
+- **Comment privacy**: `get_task_comments` no longer returns email or avatar_path.
 
 ### v1.1.3
 - **Comment visibility**: `get_task_comments` follows Kanboard's application-role visibility rules for the token user.

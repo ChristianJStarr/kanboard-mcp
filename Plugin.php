@@ -48,6 +48,13 @@ class Plugin extends Base
             'generateToken',
             Role::APP_USER
         );
+
+        // saveUrlTokenSetting: instance-wide query-string policy, admins only
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveUrlTokenSetting',
+            Role::APP_ADMIN
+        );
         // All other actions fall back to Kanboard's APP_USER default, which
         // effectively denies unauthenticated callers.
     }
@@ -86,7 +93,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '1.1.3';
+        return '1.1.4';
     }
 
     public function getPluginHomepage()

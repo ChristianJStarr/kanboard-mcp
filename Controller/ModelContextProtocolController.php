@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Controller\BaseController;
+use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
 use Throwable;
 
@@ -101,6 +102,37 @@ class ModelContextProtocolController extends BaseController
         $plainToken = $this->mcpTokenModel->regenerateForUser($userId);
         $this->mcpTokenModel->rememberReveal((int) $userId, $plainToken);
         $this->flash->success(t('New MCP token generated successfully'));
+
+        $target = $this->request->getRawValue('target');
+        $this->redirectToIntegrations(is_string($target) ? $target : '', $userId);
+    }
+
+    /**
+     * Save the instance-wide "disable token in URL" setting.
+     *
+     * Admins only. Regular users see the checkbox as read-only.
+     * A posted user_id never selects the account; the session user is used
+     * only for the integrations redirect.
+     */
+    public function saveUrlTokenSetting(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        if (!$this->userSession->isAdmin()) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = $this->userSession->getId();
+        $posted = $this->request->getRawValue('mcp_disable_url_token');
+        $disabled = is_string($posted) && $posted === '1';
+
+        $this->mcpTokenModel->setUrlTokensDisabled($disabled);
+        $this->flash->success(t('MCP URL token setting saved'));
 
         $target = $this->request->getRawValue('target');
         $this->redirectToIntegrations(is_string($target) ? $target : '', $userId);
@@ -247,22 +279,18 @@ class ModelContextProtocolController extends BaseController
     /**
      * Extract and validate the bearer token.
      *
-     * Accept the token from Authorization: Bearer <token> or from the
-     * `token` query-string parameter.  If both are present and differ,
-     * reject the request to prevent confusion.
+     * Prefer Authorization: Bearer from HTTP_AUTHORIZATION, then
+     * REDIRECT_HTTP_AUTHORIZATION (PHP-CGI / rewrite). When URL tokens are
+     * allowed, also accept `token` on the query string. If both header and
+     * query are present and differ, reject the request.
      *
      * Returns the authenticated user id, or null on failure.
      * The token value is never written to a log.
      */
     private function authenticateToken(): ?int
     {
-        $headerToken = null;
-        $authHeader  = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if ($authHeader !== '' && stripos($authHeader, 'Bearer ') === 0) {
-            $headerToken = trim(substr($authHeader, 7));
-        }
-
-        $queryToken = isset($_GET['token']) && $_GET['token'] !== '' ? (string) $_GET['token'] : null;
+        $headerToken = $this->bearerTokenFromAuthorizationHeader();
+        $queryToken  = $this->queryStringToken();
 
         if ($headerToken !== null && $queryToken !== null && $headerToken !== $queryToken) {
             // Two tokens that disagree – reject to avoid ambiguity
@@ -276,6 +304,43 @@ class ModelContextProtocolController extends BaseController
         }
 
         return $this->mcpTokenModel->authenticate($token);
+    }
+
+    /**
+     * Bearer token from the incoming Authorization header, or null.
+     */
+    private function bearerTokenFromAuthorizationHeader(): ?string
+    {
+        $authHeader = '';
+        if (isset($_SERVER['HTTP_AUTHORIZATION']) && is_string($_SERVER['HTTP_AUTHORIZATION']) && $_SERVER['HTTP_AUTHORIZATION'] !== '') {
+            $authHeader = $_SERVER['HTTP_AUTHORIZATION'];
+        } elseif (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION']) && is_string($_SERVER['REDIRECT_HTTP_AUTHORIZATION']) && $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] !== '') {
+            $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        }
+
+        if ($authHeader === '' || stripos($authHeader, 'Bearer ') !== 0) {
+            return null;
+        }
+
+        $token = trim(substr($authHeader, 7));
+
+        return $token === '' ? null : $token;
+    }
+
+    /**
+     * Query-string token when the instance still allows that compatibility path.
+     */
+    private function queryStringToken(): ?string
+    {
+        if ($this->mcpTokenModel->urlTokensDisabled()) {
+            return null;
+        }
+
+        if (!isset($_GET['token']) || $_GET['token'] === '') {
+            return null;
+        }
+
+        return (string) $_GET['token'];
     }
 
     // -----------------------------------------------------------------------
