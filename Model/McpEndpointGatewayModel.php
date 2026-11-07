@@ -145,7 +145,10 @@ class McpEndpointGatewayModel extends Base
             $this->db->closeTransaction();
         } catch (Throwable $exception) {
             $this->db->cancelTransaction();
-            throw $exception;
+            if ($exception instanceof \RuntimeException) {
+                throw $exception;
+            }
+            throw new \RuntimeException('MCP endpoint grant upsert failed.', 0, $exception);
         }
     }
 

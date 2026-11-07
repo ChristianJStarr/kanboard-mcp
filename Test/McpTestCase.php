@@ -68,19 +68,35 @@ abstract class McpTestCase extends Base
     protected function migrateFromTokenSchema(): void
     {
         $pdo = $this->container['db']->getConnection();
-        $pdo->exec('DROP TABLE ' . McpEndpointGatewayModel::TABLE);
+        $pdo->exec('DROP TABLE IF EXISTS ' . McpEndpointGatewayModel::TABLE);
         \Kanboard\Plugin\ModelContextProtocol\Schema\version_4($pdo);
     }
 
     /**
-     * SQLite only: inserting a grant row for this endpoint fails.
+     * Inserting a grant row for this endpoint fails.
      */
     protected function failGrantInsert(string $endpoint): void
     {
         $pdo = $this->container['db']->getConnection();
+        $quoted = $pdo->quote($endpoint);
+
+        if (DB_DRIVER === 'mysql') {
+            $pdo->exec('DROP TRIGGER IF EXISTS mcp_test_fail_grant');
+            $pdo->exec(
+                'CREATE TRIGGER mcp_test_fail_grant BEFORE INSERT ON ' . McpEndpointGatewayModel::TABLE
+                . ' FOR EACH ROW BEGIN IF NEW.endpoint = ' . $quoted
+                . " THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced grant failure'; END IF; END"
+            );
+            return;
+        }
+
+        if (DB_DRIVER !== 'sqlite') {
+            $this->markTestSkipped('Grant-insert failure injection is SQLite/MySQL only');
+        }
+
         $pdo->exec(
             'CREATE TRIGGER mcp_test_fail_grant BEFORE INSERT ON ' . McpEndpointGatewayModel::TABLE
-            . ' WHEN NEW.endpoint = ' . $pdo->quote($endpoint)
+            . ' WHEN NEW.endpoint = ' . $quoted
             . " BEGIN SELECT RAISE(ABORT, 'forced grant failure'); END"
         );
     }

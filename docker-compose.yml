@@ -1,0 +1,85 @@
+name: kanboard-mcp
+
+# Local Kanboard + MySQL so the plugin schema can run on MySQL.
+# Official MariaDB example: https://github.com/kanboard/kanboard/blob/main/docker-compose.mysql.yml
+# Image pin matches the existing e2e environment (Kanboard 1.2.45).
+
+services:
+  mysql:
+    image: mysql:8.0
+    pull_policy: missing
+    container_name: kanboard-mcp-mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: kanboard
+      MYSQL_DATABASE: kanboard
+      MYSQL_USER: kanboard
+      MYSQL_PASSWORD: kanboard
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ${KANBOARD_ROOT:-../kanboard-src}/app/Schema/Sql/mysql.sql:/docker-entrypoint-initdb.d/10-kanboard.sql:ro
+      - ./docker/mysql-init/20-test-db.sql:/docker-entrypoint-initdb.d/20-test-db.sql:ro
+      - ./docker/mysql-init/30-schema-139.sql:/docker-entrypoint-initdb.d/30-schema-139.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pkanboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  kanboard:
+    image: kanboard/kanboard:v1.2.45
+    pull_policy: missing
+    container_name: kanboard-mcp-app
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      DATABASE_URL: mysql://kanboard:kanboard@mysql/kanboard
+      DB_RUN_MIGRATIONS: "false"
+    volumes:
+      - kanboard-data:/var/www/app/data
+      - kanboard-plugins:/var/www/app/plugins
+      - kanboard-ssl:/etc/nginx/ssl
+      - type: bind
+        source: .
+        target: /var/www/app/plugins/ModelContextProtocol
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "--max-time", "4", "http://127.0.0.1/login"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+
+  phpunit:
+    profiles: ["test"]
+    build:
+      context: docker/phpunit
+    image: kanboard-mcp-phpunit:8.3
+    working_dir: /kanboard
+    environment:
+      KANBOARD_ROOT: /kanboard
+      DB_HOSTNAME: mysql
+      DB_USERNAME: root
+      DB_PASSWORD: kanboard
+      DB_NAME: kanboard_unit_test
+    volumes:
+      - ${KANBOARD_ROOT:-../kanboard-src}:/kanboard:ro
+      - .:/plugin:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["php", "vendor/bin/phpunit", "-c", "/plugin/phpunit.mysql.xml"]
+
+volumes:
+  mysql-data:
+  kanboard-data:
+  kanboard-plugins:
+  kanboard-ssl:

@@ -69,6 +69,37 @@ class McpEndpointGatewayModelTest extends McpTestCase
         $this->assertSame(0, $this->enabledValue($saved, 'create_task'));
     }
 
+    public function testMysqlVersion4RetriesViaStagingTable(): void
+    {
+        if (DB_DRIVER !== 'mysql') {
+            $this->markTestSkipped('Staging table retry is the MySQL version_4 path');
+        }
+
+        $userId = $this->createUser('staging-retry');
+        $this->container['mcpTokenModel']->regenerateForUser($userId);
+        $pdo = $this->container['db']->getConnection();
+
+        $pdo->exec('DROP TABLE IF EXISTS mcp_endpoint_grants');
+        $pdo->exec('DROP TABLE IF EXISTS mcp_endpoint_grants_v4');
+        $pdo->exec('
+            CREATE TABLE mcp_endpoint_grants_v4 (
+                user_id  INT         NOT NULL,
+                endpoint VARCHAR(64) NOT NULL,
+                enabled  TINYINT     NOT NULL,
+                PRIMARY KEY (user_id, endpoint)
+            ) ENGINE=InnoDB CHARSET=utf8
+        ');
+
+        $this->assertFalse(\Kanboard\Plugin\ModelContextProtocol\Schema\mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants'));
+        $this->assertTrue(\Kanboard\Plugin\ModelContextProtocol\Schema\mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants_v4'));
+
+        $this->runVersion4();
+
+        $this->assertTrue(\Kanboard\Plugin\ModelContextProtocol\Schema\mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants'));
+        $this->assertFalse(\Kanboard\Plugin\ModelContextProtocol\Schema\mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants_v4'));
+        $this->assertSame($this->writeEndpointNames(), $this->storedEndpoints($userId));
+    }
+
     public function testRegenerateKeepsGrantRows(): void
     {
         $userId = $this->createUser('regenerate-grants');
