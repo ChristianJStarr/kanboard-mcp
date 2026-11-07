@@ -1204,8 +1204,9 @@ class McpServer extends Base
      * Comments this token user is allowed to read.
      * Same visibility rules as CommentProcedure::getAllComments, using the
      * token user's application role rather than the browser session.
+     * Profile fields such as email and avatar_path are omitted.
      *
-     * @return array<int,array<string,mixed>>
+     * @return array<int,array{id:int,task_id:int,user_id:int,username:string,name:string,comment:string,date_creation:int,date_modification:int,visibility:string}>
      */
     private function visibleComments(int $taskId): array
     {
@@ -1221,7 +1222,17 @@ class McpServer extends Base
             if ($role === Role::APP_USER && $visibility !== Role::APP_USER) {
                 continue;
             }
-            $visible[] = $comment;
+            $visible[] = [
+                'id'                => (int) ($comment['id'] ?? 0),
+                'task_id'           => (int) ($comment['task_id'] ?? 0),
+                'user_id'           => (int) ($comment['user_id'] ?? 0),
+                'username'          => (string) ($comment['username'] ?? ''),
+                'name'              => (string) ($comment['name'] ?? ''),
+                'comment'           => (string) ($comment['comment'] ?? ''),
+                'date_creation'     => (int) ($comment['date_creation'] ?? 0),
+                'date_modification' => (int) ($comment['date_modification'] ?? 0),
+                'visibility'        => $visibility,
+            ];
         }
 
         return array_values($visible);

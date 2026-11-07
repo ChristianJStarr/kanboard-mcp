@@ -49,6 +49,13 @@ class Plugin extends Base
             Role::APP_USER
         );
 
+        // saveUrlTokenSetting: instance-wide query-string policy, admins only
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveUrlTokenSetting',
+            Role::APP_ADMIN
+        );
+
         // saveGateway: the session user may toggle only their own endpoints
         $this->applicationAccessMap->add(
             'ModelContextProtocolController',
@@ -92,7 +99,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '1.2.2';
+        return '1.2.3';
     }
 
     public function getPluginHomepage()

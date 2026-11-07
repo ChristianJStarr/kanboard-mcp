@@ -10,6 +10,11 @@ $generateUrl = $this->helper->url->to(
     'generateToken',
     ['plugin' => 'ModelContextProtocol']
 );
+$saveUrlTokenUrl = $this->helper->url->to(
+    'ModelContextProtocolController',
+    'saveUrlTokenSetting',
+    ['plugin' => 'ModelContextProtocol']
+);
 $saveUrl = $this->helper->url->to(
     'ModelContextProtocolController',
     'saveGateway',
@@ -24,6 +29,10 @@ $hasToken = $this->task->mcpTokenModel->hasToken($mcpUserId);
       method="post"
       action="<?= $this->text->e($generateUrl) ?>"
       <?= $hasToken ? 'onsubmit="return confirm(\'' . t('This will invalidate the current token. Are you sure?') . '\')"' : '' ?>>
+    <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
+    <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
+</form>
+<form id="mcp-url-token-form" method="post" action="<?= $this->text->e($saveUrlTokenUrl) ?>">
     <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
     <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
 </form>

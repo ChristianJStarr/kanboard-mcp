@@ -20,6 +20,12 @@ class McpTokenModel extends Base
     public const REVEAL_SESSION_KEY = 'mcp_token_reveal';
 
     /**
+     * Instance setting: when "1", authenticateToken() ignores $_GET['token'].
+     * Missing or "0" keeps the compatibility query-string path.
+     */
+    public const CONFIG_DISABLE_URL_TOKEN = 'mcp_disable_url_token';
+
+    /**
      * Return true when this user already has a token row.
      * The plaintext is not stored.
      */
@@ -141,5 +147,25 @@ class McpTokenModel extends Base
         }
 
         return $userId;
+    }
+
+    /**
+     * True when query-string tokens must not authenticate.
+     *
+     * Reads the settings row directly so a save in the same request is visible.
+     */
+    public function urlTokensDisabled(): bool
+    {
+        return $this->configModel->getOption(self::CONFIG_DISABLE_URL_TOKEN, '0') === '1';
+    }
+
+    /**
+     * Persist the instance-wide URL-token policy. Survives token rotation.
+     */
+    public function setUrlTokensDisabled(bool $disabled): bool
+    {
+        return $this->configModel->save([
+            self::CONFIG_DISABLE_URL_TOKEN => $disabled ? '1' : '0',
+        ]);
     }
 }
