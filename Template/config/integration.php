@@ -35,7 +35,7 @@
                    value="1"
                    id="mcp-disable-url-token"
                    <?= $mcpDisableUrlToken ? 'checked="checked"' : '' ?>
-                   <?= $mcpIsAdmin ? 'onchange="this.form.submit()"' : 'disabled="disabled"' ?>>
+                   <?= $mcpIsAdmin ? '' : 'disabled="disabled"' ?>>
             <?= t('Disable token in URL (query string)') ?>
         </label>
         <p class="form-help"><?= t('When this is checked, MCP clients must send the token in the Authorization header. A token in the URL can be written to web server and proxy access logs.') ?></p>
