@@ -35,8 +35,6 @@ class Plugin extends Base
             'ModelContextProtocol:config/forms'
         );
 
-        // External file: Kanboard's CSP is default-src 'self', so an inline
-        // onchange handler is ignored and the checkbox never posts.
         $this->hook->on('template:layout:js', [
             'template' => 'plugins/ModelContextProtocol/Assets/js/url-token-setting.js',
         ]);
