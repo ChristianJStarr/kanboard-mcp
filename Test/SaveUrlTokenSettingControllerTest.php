@@ -171,8 +171,16 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
             $panel
         );
         $this->assertStringContainsString('id="mcp-disable-url-token"', $panel);
-        $this->assertStringContainsString('onchange="this.form.submit()"', $panel);
+        $this->assertStringNotContainsString('onchange=', $panel);
         $this->assertStringContainsString('disabled="disabled"', $panel);
+        $plugin = file_get_contents(dirname(__DIR__) . '/Plugin.php');
+        $script = file_get_contents(dirname(__DIR__) . '/Assets/js/url-token-setting.js');
+        $this->assertIsString($plugin);
+        $this->assertIsString($script);
+        $this->assertStringContainsString('plugins/ModelContextProtocol/Assets/js/url-token-setting.js', $plugin);
+        $this->assertStringContainsString("getElementById('mcp-disable-url-token')", $script);
+        $this->assertStringContainsString("getElementById('mcp-url-token-form')", $script);
+        $this->assertStringContainsString('requestSubmit', $script);
         $this->assertStringContainsString('id="mcp-save-url-token-setting"', $panel);
         $this->assertStringNotContainsString('name="mcp_disable_url_token"', $forms);
         $this->assertStringContainsString('id="mcp-url-token-form"', $forms);
