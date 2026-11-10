@@ -18,9 +18,12 @@ class SchemaSourceTest extends McpTestCase
         foreach ($insertSql as $filename => $sql) {
             $source = file_get_contents(dirname(__DIR__) . '/Schema/' . $filename);
             $this->assertIsString($source);
-            $this->assertStringContainsString('const VERSION = 4;', $source);
+            $this->assertStringContainsString('const VERSION = 6;', $source);
             $this->assertStringContainsString('function version_3', $source);
             $this->assertStringContainsString('function version_4', $source);
+            $this->assertStringContainsString('function version_5', $source);
+            $this->assertStringContainsString('function version_6', $source);
+            $this->assertStringContainsString('expires_at', $source);
             $this->assertStringContainsString('mcp_endpoint_grants', $source);
             $this->assertStringContainsString('McpCatalog.php', $source);
             $this->assertStringContainsString(':user_id', $source);
@@ -41,11 +44,11 @@ class SchemaSourceTest extends McpTestCase
 
     public function testLoadSchemaReachesVersion4AndExistingTokenStillAuthenticates(): void
     {
-        $this->assertSame(4, \Kanboard\Plugin\ModelContextProtocol\Schema\VERSION);
-        $this->assertTrue(function_exists('\Kanboard\Plugin\ModelContextProtocol\Schema\version_4'));
+        $this->assertSame(6, \Kanboard\Plugin\ModelContextProtocol\Schema\VERSION);
+        $this->assertTrue(function_exists('\Kanboard\Plugin\ModelContextProtocol\Schema\version_6'));
 
         $schema = new SchemaHandler($this->container);
-        $this->assertSame(4, $schema->getSchemaVersion('ModelContextProtocol'));
+        $this->assertSame(6, $schema->getSchemaVersion('ModelContextProtocol'));
 
         $userId = $this->createUser('schema-auth-user');
         $plain = $this->container['mcpTokenModel']->regenerateForUser($userId);
@@ -53,7 +56,7 @@ class SchemaSourceTest extends McpTestCase
 
         $schema->loadSchema('ModelContextProtocol');
 
-        $this->assertSame(4, $schema->getSchemaVersion('ModelContextProtocol'));
+        $this->assertSame(6, $schema->getSchemaVersion('ModelContextProtocol'));
         $this->assertSame(
             $hash,
             $this->container['db']->table(McpTokenModel::TABLE)->eq('user_id', $userId)->findOneColumn('token')

@@ -4,7 +4,7 @@ namespace Kanboard\Plugin\ModelContextProtocol\Schema;
 
 require_once __DIR__ . '/../Core/McpCatalog.php';
 
-const VERSION = 4;
+const VERSION = 6;
 
 function version_1($pdo)
 {
@@ -119,6 +119,24 @@ function version_4($pdo)
         'INSERT OR IGNORE INTO mcp_endpoint_grants (user_id, endpoint, enabled) VALUES (:user_id, :endpoint, 1)'
     );
     mcp_backfill_write_grants($pdo, $insert);
+}
+
+function version_5($pdo)
+{
+    if (!mcp_sqlite_table_exists($pdo, 'mcp_tokens')) {
+        mcp_sqlite_create_tokens($pdo);
+    }
+    if (!mcp_sqlite_column_exists($pdo, 'mcp_tokens', 'expires_at')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN expires_at INTEGER');
+    }
+    if (!mcp_sqlite_column_exists($pdo, 'mcp_tokens', 'rotation_notified_on')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN rotation_notified_on INTEGER');
+    }
+}
+
+function version_6($pdo)
+{
+    version_5($pdo);
 }
 
 /**

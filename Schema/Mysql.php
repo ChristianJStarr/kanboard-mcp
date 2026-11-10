@@ -4,7 +4,7 @@ namespace Kanboard\Plugin\ModelContextProtocol\Schema;
 
 require_once __DIR__ . '/../Core/McpCatalog.php';
 
-const VERSION = 4;
+const VERSION = 6;
 
 function version_1($pdo)
 {
@@ -84,6 +84,24 @@ function version_4($pdo)
     mcp_backfill_write_grants($pdo, $insert);
 
     $pdo->exec('RENAME TABLE mcp_endpoint_grants_v4 TO mcp_endpoint_grants');
+}
+
+function version_5($pdo)
+{
+    if (!mcp_mysql_table_exists($pdo, 'mcp_tokens')) {
+        mcp_mysql_create_tokens($pdo);
+    }
+    if (!mcp_mysql_column_exists($pdo, 'mcp_tokens', 'expires_at')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN expires_at INT NULL');
+    }
+    if (!mcp_mysql_column_exists($pdo, 'mcp_tokens', 'rotation_notified_on')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN rotation_notified_on INT NULL');
+    }
+}
+
+function version_6($pdo)
+{
+    version_5($pdo);
 }
 
 /**

@@ -4,7 +4,7 @@ namespace Kanboard\Plugin\ModelContextProtocol\Schema;
 
 require_once __DIR__ . '/../Core/McpCatalog.php';
 
-const VERSION = 4;
+const VERSION = 6;
 
 function version_1($pdo)
 {
@@ -119,6 +119,24 @@ function mcp_postgres_create_tokens($pdo)
 
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_tokens (token)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_mcp_user  ON mcp_tokens (user_id)');
+}
+
+function version_5($pdo)
+{
+    if (!mcp_postgres_table_exists($pdo, 'mcp_tokens')) {
+        mcp_postgres_create_tokens($pdo);
+    }
+    if (!mcp_postgres_column_exists($pdo, 'mcp_tokens', 'expires_at')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN expires_at INTEGER');
+    }
+    if (!mcp_postgres_column_exists($pdo, 'mcp_tokens', 'rotation_notified_on')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN rotation_notified_on INTEGER');
+    }
+}
+
+function version_6($pdo)
+{
+    version_5($pdo);
 }
 
 function mcp_postgres_table_exists($pdo, $table)
