@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+    bootstrap="Test/bootstrap.php"
+    colors="true"
+    cacheResult="false">
+    <testsuites>
+        <testsuite name="ModelContextProtocol">
+            <directory>Test</directory>
+        </testsuite>
+    </testsuites>
+    <php>
+        <const name="DB_DRIVER" value="sqlite"/>
+        <const name="DB_FILENAME" value=":memory:"/>
+        <!-- String const "false" would be truthy. The env value is parsed by Kanboard. -->
+        <env name="DB_WAL_MODE" value="false" force="true"/>
+    </php>
+</phpunit>
