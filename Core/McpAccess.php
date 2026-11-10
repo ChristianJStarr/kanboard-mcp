@@ -32,6 +32,12 @@ class McpAccess
     /** Cached list of visible project ids  [project_id => project_name] */
     private ?array $visibleProjects = null;
 
+    /** @var array<string,bool> */
+    private array $capabilityCache = [];
+
+    /** @var array<int,string> Project roles read by capability scans  [project_id => role] */
+    private array $projectRoleCache = [];
+
     public function __construct($container, int $userId)
     {
         $this->container = $container;
@@ -50,6 +56,95 @@ class McpAccess
     {
         $role = $this->getAppRole();
         return $role === Role::APP_ADMIN || $role === Role::APP_MANAGER;
+    }
+
+    /**
+     * Whether this token user may be offered the given capability at all.
+     *
+     * Unknown capabilities are false. enabled=1 does not skip this check.
+     * Results are cached for the request.
+     */
+    public function allowsCapability(string $capability): bool
+    {
+        if (!array_key_exists($capability, $this->capabilityCache)) {
+            $this->capabilityCache[$capability] = $this->resolveCapability($capability);
+        }
+
+        return $this->capabilityCache[$capability];
+    }
+
+    private function resolveCapability(string $capability): bool
+    {
+        if ($capability === McpCatalog::CAP_READ) {
+            return true;
+        }
+
+        if ($capability === McpCatalog::CAP_TASK_DELETE) {
+            return $this->allowsCapability(McpCatalog::CAP_TASK_WRITE);
+        }
+
+        if ($capability === McpCatalog::CAP_TASK_WRITE) {
+            return $this->isAppAdmin()
+                || $this->hasExactRoleOnAnyVisibleProject([
+                    Role::PROJECT_MEMBER,
+                    Role::PROJECT_MANAGER,
+                ])
+                || $this->hasCustomRoleOnAnyVisibleProject();
+        }
+
+        if ($capability === McpCatalog::CAP_BOARD) {
+            return $this->isAppAdmin() || $this->hasExactRoleOnAnyVisibleProject([
+                Role::PROJECT_MANAGER,
+            ]);
+        }
+
+        if ($capability === McpCatalog::CAP_CREATE_PROJECT) {
+            return $this->canCreateProject();
+        }
+
+        return false;
+    }
+
+    /**
+     * Exact role match only. Custom project roles are handled separately.
+     *
+     * App-admins are handled by the caller via isAppAdmin(). They are project
+     * managers through getProjectRole() even when they have no membership.
+     *
+     * @param string[] $roles
+     */
+    private function hasExactRoleOnAnyVisibleProject(array $roles): bool
+    {
+        foreach ($this->getVisibleProjectIds() as $projectId) {
+            if (in_array($this->getCachedProjectRole($projectId), $roles, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasCustomRoleOnAnyVisibleProject(): bool
+    {
+        foreach ($this->getVisibleProjectIds() as $projectId) {
+            if ($this->isCustomProjectRole($this->getCachedProjectRole($projectId))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Capability scans only. Per-project checks keep reading the live role.
+     */
+    private function getCachedProjectRole(int $projectId): string
+    {
+        if (!array_key_exists($projectId, $this->projectRoleCache)) {
+            $this->projectRoleCache[$projectId] = $this->getProjectRole($projectId);
+        }
+
+        return $this->projectRoleCache[$projectId];
     }
 
     /**

@@ -35,9 +35,14 @@ class Plugin extends Base
             'ModelContextProtocol:config/forms'
         );
 
-        $this->hook->on('template:layout:js', [
-            'template' => 'plugins/ModelContextProtocol/Assets/js/url-token-setting.js',
-        ]);
+        $this->template->setTemplateOverride(
+            'web_notification/show',
+            'ModelContextProtocol:web_notification/show'
+        );
+        $this->template->hook->attach(
+            'template:layout:top',
+            'ModelContextProtocol:config/rotation_notice'
+        );
 
         // handle: public endpoint – no session required, token-authenticated
         $this->applicationAccessMap->add(
@@ -59,8 +64,23 @@ class Plugin extends Base
             'saveUrlTokenSetting',
             Role::APP_ADMIN
         );
-        // All other actions fall back to Kanboard's APP_USER default, which
-        // effectively denies unauthenticated callers.
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveTokenRotation',
+            Role::APP_ADMIN
+        );
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveInstanceSettings',
+            Role::APP_ADMIN
+        );
+
+        // saveGateway: the session user may toggle only their own endpoints
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveGateway',
+            Role::APP_USER
+        );
     }
 
     public function onStartup()
@@ -76,6 +96,7 @@ class Plugin extends Base
             ],
             'Plugin\ModelContextProtocol\Model' => [
                 'McpTokenModel',
+                'McpEndpointGatewayModel',
             ],
         ];
     }
@@ -97,7 +118,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '1.1.4';
+        return '1.2.3';
     }
 
     public function getPluginHomepage()

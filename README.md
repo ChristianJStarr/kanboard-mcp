@@ -11,6 +11,7 @@ Transform your Kanboard into an AI-powered project management powerhouse! This p
 ## Features
 
 - **Per-user Token Authentication**: Every Kanboard user gets their own MCP token that grants access only to their own boards and nothing else.
+- **Per-user endpoint gateway**: Each user turns on only the tools and resources their role allows. An admin does not edit another person's toggles.
 - **Role-Aware Authorization**: Read, write, or manage-board operations are enforced using each user's actual Kanboard project role (viewer / member / manager).
 - **AI Assistant Ready**: Optimized for Cursor, Claude, and other AI development tools.
 - **Full CRUD Operations**: Create, read, update, and delete across all Kanboard entities you have permission for.
@@ -151,6 +152,29 @@ Every tool call is authorized against the token user's real Kanboard permissions
 - If URL tokens are allowed and both header and query-string tokens are present and they differ, the request is rejected.
 - If URL tokens are disabled, `$_GET['token']` is ignored. A valid Bearer header still authenticates.
 
+### Endpoint gateway
+
+Authentication identifies the user. The gateway chooses which role-allowed endpoints are on for that user's own token.
+
+The integrations page has a second form, separate from **Autogenerar** and from Kanboard's own settings form. It lists only the endpoints `allowsCapability` grants to the signed-in user. Saving stores `enabled=1` or `enabled=0` for each of those endpoints. Rows are never deleted, and regenerating a token does not remove them. An administrator viewing another profile does not see or edit that person's gateway; the form is always the session user, the same as the token panel.
+
+- Tokens that already existed when the instance was upgraded keep their write endpoints on. The schema backfill inserts `enabled=1` for every write-class catalog endpoint for each existing `mcp_tokens` user. Read endpoints stay on without inserted rows.
+- Tokens created after the upgrade start with reads on and writes off until that user saves the form. A missing grant row means the catalog default.
+
+What a role can see when the endpoint is enabled:
+
+| Role | Listed when enabled |
+|------|---------------------|
+| Project viewer | The 8 read tools and the two read resources |
+| Project member | Viewer endpoints, plus task create/update/move/assign/due-date/comment and delete |
+| Project manager | Member endpoints, plus board tools (columns, categories, swimlanes) |
+| App manager | The 8 read tools, the two read resources, and `create_project`. Board tools stay hidden unless they are also a project manager or an app admin. A project manager who is not an app manager does not get `create_project`. |
+| App admin | All 26 tools and both resources on their own token, once those endpoints are enabled |
+
+A fresh app-admin token shows the read endpoints until writes are turned on. An admin whose token existed before the upgrade still sees writes, because the backfill left them enabled.
+
+`initialize` keeps `listChanged` false for tools and resources, so clients should reconnect to refresh `tools/list` after a save. `tools/call` still enforces the toggle immediately. A role-allowed endpoint that is switched off is omitted from the list and returns a tool result whose text is exactly `Forbidden`, including when the arguments are invalid. A name the role cannot use, and any unknown name, both return JSON-RPC `-32602` with message `Unknown tool: {name}`. A disabled resource reads as `-32002` Resource not found with `data.uri`, the same as an unknown URI. Turning a hidden tool on in the database does not make it callable.
+
 ## Technical Specifications
 
 ### Requirements
@@ -170,6 +194,20 @@ Every tool call is authorized against the token user's real Kanboard permissions
 - **Methods**: POST for all MCP operations
 
 ## Changelog
+
+### v1.2.3
+- **URL tokens and comment PII**: the gateway branch includes the 1.1.4 Integrations header config, the admin disable-URL-token setting, CGI Authorization, and comment privacy fixes.
+
+### v1.2.2
+- **Review fixes**: the gateway branch includes the 1.1.3 authorization fixes. Schema version 4 removes any leftover `token_plain` value and then creates the endpoint grants.
+
+### v1.2.1
+- **Integrations submit**: Generate Token and Save access post forms rendered outside Kanboard's settings form, so one creates a token and the other saves grants. Both redirects return to the core integrations page and do not name this plugin.
+
+### v1.2.0
+- **Endpoint gateway**: Each user can enable or disable the MCP endpoints their role allows. Old tokens keep writes on via the migration backfill. New tokens start with writes off.
+- **Unknown versus forbidden**: A role-hidden or unknown tool returns `Unknown tool`. A role-allowed endpoint that is off returns `Forbidden` and is not dispatched.
+- **List refresh**: `listChanged` stays false. Clients should reconnect so `tools/list` matches the toggles. `tools/call` enforces the switch without waiting for that refresh.
 
 ### v1.1.4
 - **Header configuration**: Integrations shows the spec-compliant MCP client block (URL without a token + `Authorization: Bearer`) and a compatibility URL-with-token block, with a warning that query-string tokens can appear in access logs.

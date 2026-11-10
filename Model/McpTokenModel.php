@@ -25,6 +25,19 @@ class McpTokenModel extends Base
      */
     public const CONFIG_DISABLE_URL_TOKEN = 'mcp_disable_url_token';
 
+    public const CONFIG_ROTATION_ENABLED = 'mcp_token_rotation_enabled';
+
+    public const CONFIG_ROTATION_DAYS = 'mcp_token_rotation_days';
+
+    public const ROTATION_EVENT = 'mcp.token.rotation';
+
+    public const ROTATION_WARNING_DAYS = 14;
+
+    /** @var int[] */
+    public const ROTATION_DAY_OPTIONS = [30, 60, 90, 180, 360];
+
+    private $authenticationExpired = false;
+
     /**
      * Return true when this user already has a token row.
      * The plaintext is not stored.
@@ -87,10 +100,13 @@ class McpTokenModel extends Base
         // Remove the old row first so the unique constraints are satisfied
         $this->db->table(self::TABLE)->eq('user_id', $userId)->remove();
 
+        $createdAt = time();
         $inserted = $this->db->table(self::TABLE)->insert([
-            'user_id'    => $userId,
-            'token'      => $hashToken,
-            'created_at' => time(),
+            'user_id'               => $userId,
+            'token'                 => $hashToken,
+            'created_at'            => $createdAt,
+            'expires_at'            => $this->expiryFrom($createdAt),
+            'rotation_notified_on'  => null,
         ]);
 
         if (!$inserted) {
@@ -118,6 +134,8 @@ class McpTokenModel extends Base
      */
     public function authenticate(string $token): ?int
     {
+        $this->authenticationExpired = false;
+
         if (empty($token)) {
             return null;
         }
@@ -126,7 +144,7 @@ class McpTokenModel extends Base
 
         $row = $this->db->table(self::TABLE)
             ->eq('token', $lookupHash)
-            ->columns('user_id', 'token')
+            ->columns('user_id', 'token', 'expires_at', 'created_at', 'rotation_notified_on')
             ->findOne();
 
         if (empty($row)) {
@@ -146,7 +164,151 @@ class McpTokenModel extends Base
             return null;
         }
 
+        if ($this->rotationEnabled()) {
+            $expiresAt = (int) ($row['expires_at'] ?? 0);
+            if ($expiresAt > 0 && time() >= $expiresAt) {
+                $this->authenticationExpired = true;
+                $this->notifyUser($userId);
+                return null;
+            }
+            $this->notifyUser($userId);
+        }
+
         return $userId;
+    }
+
+    public function authenticationExpired(): bool
+    {
+        return $this->authenticationExpired;
+    }
+
+    public function rotationEnabled(): bool
+    {
+        return $this->configModel->getOption(self::CONFIG_ROTATION_ENABLED, '0') === '1';
+    }
+
+    public function rotationDays(): int
+    {
+        $days = (int) $this->configModel->getOption(self::CONFIG_ROTATION_DAYS, '90');
+
+        return in_array($days, self::ROTATION_DAY_OPTIONS, true) ? $days : 90;
+    }
+
+    /**
+     * @return int|null Unix time, or null when this user has no expiry
+     */
+    public function expiresAtForUser(int $userId): ?int
+    {
+        if (!$this->rotationEnabled()) {
+            return null;
+        }
+
+        $row = $this->db->table(self::TABLE)
+            ->eq('user_id', $userId)
+            ->findOne();
+        if (empty($row) || !isset($row['expires_at']) || $row['expires_at'] === null || $row['expires_at'] === '') {
+            return null;
+        }
+
+        return (int) $row['expires_at'];
+    }
+
+    public function saveRotation(bool $enabled, int $days): void
+    {
+        if (!in_array($days, self::ROTATION_DAY_OPTIONS, true)) {
+            throw new \InvalidArgumentException('Invalid MCP token rotation period');
+        }
+
+        $this->configModel->save([
+            self::CONFIG_ROTATION_ENABLED => $enabled ? '1' : '0',
+            self::CONFIG_ROTATION_DAYS => (string) $days,
+        ]);
+        $this->rewriteExpiry($enabled, $days);
+
+        if (!$enabled) {
+            $this->db->table('user_has_unread_notifications')
+                ->eq('event_name', self::ROTATION_EVENT)
+                ->remove();
+            return;
+        }
+
+        $rows = $this->db->table(self::TABLE)->columns('user_id')->findAll();
+        foreach ($rows as $row) {
+            $this->notifyUser((int) $row['user_id']);
+        }
+    }
+
+    /**
+     * Add one My notifications item when this user's token is inside the
+     * 14-day window. An unread item for the same expiry is left in place.
+     * A cleared item is sent again on a later day.
+     */
+    public function notifyUser(int $userId): void
+    {
+        if ($userId <= 0 || !$this->rotationEnabled() || !$this->userModel->isActive($userId)) {
+            return;
+        }
+
+        $row = $this->db->table(self::TABLE)->eq('user_id', $userId)->findOne();
+        if (empty($row)) {
+            return;
+        }
+
+        $expiresAt = (int) ($row['expires_at'] ?? 0);
+        if ($expiresAt <= 0 || time() < $expiresAt - self::ROTATION_WARNING_DAYS * 86400) {
+            return;
+        }
+
+        $existing = $this->db->table('user_has_unread_notifications')
+            ->eq('user_id', $userId)
+            ->eq('event_name', self::ROTATION_EVENT)
+            ->findAll();
+        foreach ($existing as $event) {
+            $data = json_decode((string) ($event['event_data'] ?? ''), true);
+            if (is_array($data) && (int) ($data['expires_at'] ?? 0) === $expiresAt) {
+                return;
+            }
+        }
+
+        $notifiedOn = (int) ($row['rotation_notified_on'] ?? 0);
+        if ($notifiedOn >= strtotime('today')) {
+            return;
+        }
+
+        $date = date('Y-m-d', $expiresAt);
+        if (time() >= $expiresAt) {
+            $message = t('Your MCP token expired on %s. Generate a new one in Settings → Integrations.', $date);
+        } else {
+            $message = t('Your MCP token expires on %s. Generate a new one in Settings → Integrations.', $date);
+        }
+
+        $this->userUnreadNotificationModel->create($userId, self::ROTATION_EVENT, [
+            'message' => $message,
+            'expires_at' => $expiresAt,
+        ]);
+        $this->db->table(self::TABLE)->eq('user_id', $userId)->update([
+            'rotation_notified_on' => time(),
+        ]);
+    }
+
+    private function expiryFrom(int $createdAt): ?int
+    {
+        if (!$this->rotationEnabled()) {
+            return null;
+        }
+
+        return $createdAt + $this->rotationDays() * 86400;
+    }
+
+    private function rewriteExpiry(bool $enabled, int $days): void
+    {
+        $rows = $this->db->table(self::TABLE)->columns('user_id', 'created_at')->findAll();
+        foreach ($rows as $row) {
+            $this->db->table(self::TABLE)->eq('user_id', (int) $row['user_id'])->update([
+                'expires_at' => $enabled ? (int) $row['created_at'] + $days * 86400 : null,
+                'rotation_notified_on' => null,
+            ]);
+        }
     }
 
     /**

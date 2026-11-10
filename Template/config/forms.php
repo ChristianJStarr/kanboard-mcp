@@ -10,9 +10,14 @@ $generateUrl = $this->helper->url->to(
     'generateToken',
     ['plugin' => 'ModelContextProtocol']
 );
-$saveUrlTokenUrl = $this->helper->url->to(
+$saveSettingsUrl = $this->helper->url->to(
     'ModelContextProtocolController',
-    'saveUrlTokenSetting',
+    'saveInstanceSettings',
+    ['plugin' => 'ModelContextProtocol']
+);
+$saveUrl = $this->helper->url->to(
+    'ModelContextProtocolController',
+    'saveGateway',
     ['plugin' => 'ModelContextProtocol']
 );
 $csrfToken = $this->task->token->getReusableCSRFToken();
@@ -27,7 +32,12 @@ $hasToken = $this->task->mcpTokenModel->hasToken($mcpUserId);
     <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
     <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
 </form>
-<form id="mcp-url-token-form" method="post" action="<?= $this->text->e($saveUrlTokenUrl) ?>">
+<form id="mcp-settings-form" method="post" action="<?= $this->text->e($saveSettingsUrl) ?>">
     <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
     <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
+</form>
+<form id="mcp-gateway-form" method="post" action="<?= $this->text->e($saveUrl) ?>">
+    <input type="hidden" name="csrf_token" value="<?= $this->text->e($csrfToken) ?>">
+    <input type="hidden" name="target" value="<?= $this->text->e($mcpTarget) ?>">
+    <input type="hidden" name="gateway_save" value="1">
 </form>

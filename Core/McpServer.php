@@ -7,6 +7,7 @@ use Kanboard\Core\Base;
 use Kanboard\Core\Security\Role;
 use Kanboard\Model\ColumnModel;
 use Kanboard\Model\TaskModel;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpEndpointGatewayModel;
 use InvalidArgumentException;
 use Throwable;
 use Traversable;
@@ -34,6 +35,9 @@ class McpServer extends Base
 
     private int $userId;
     private McpAccess $access;
+
+    /** @var array<string,bool>|null Gateway bits for the token user, loaded once per request */
+    private ?array $enabledEndpoints = null;
 
     public function __construct($container, int $userId)
     {
@@ -126,7 +130,7 @@ class McpServer extends Base
                 'serverInfo' => [
                     'name'        => 'kanboard-mcp',
                     'title'       => 'Kanboard MCP Server',
-                    'version'     => '1.1.3',
+                    'version'     => '1.2.2',
                     'description' => 'Kanboard project-management tools and resources via MCP.',
                 ],
                 'instructions' => 'Use the available Kanboard tools to manage projects, tasks, columns, categories, and swimlanes. You can only see and modify boards you have access to.',
@@ -452,7 +456,7 @@ class McpServer extends Base
         return [
             'jsonrpc' => '2.0',
             'id'      => $id,
-            'result'  => ['tools' => $tools],
+            'result'  => ['tools' => $this->exposedDefinitions($tools, McpCatalog::KIND_TOOL, 'name')],
         ];
     }
 
@@ -466,12 +470,22 @@ class McpServer extends Base
             return $this->errorResponse(-32602, 'Invalid params: name is required and must be a non-empty string', $id);
         }
 
+        // A non-object arguments value is rejected before any catalog lookup so
+        // the error does not reveal whether the name exists.
         if (array_key_exists('arguments', $params) && !is_array($params['arguments'])) {
             return $this->errorResponse(-32602, 'Invalid params: arguments must be an object', $id);
         }
 
         $toolName  = $params['name'];
         $arguments = $params['arguments'] ?? [];
+
+        // Capability is evaluated before the gateway bit. The grant lookup is
+        // outside the dispatch try so a query failure is not treated as enabled
+        // and does not enter dispatchTool.
+        $rejection = $this->rejectHiddenOrDisabledTool($toolName, $id);
+        if ($rejection !== null) {
+            return $rejection;
+        }
 
         try {
             return $this->dispatchTool($toolName, $arguments, $id);
@@ -1026,24 +1040,26 @@ class McpServer extends Base
             return $this->errorResponse(-32602, 'Invalid params: cursor must be a string', $id);
         }
 
+        $resources = [
+            [
+                'uri'         => 'kanboard://projects',
+                'name'        => 'Project List',
+                'description' => 'List of projects visible to you',
+                'mimeType'    => 'application/json',
+            ],
+            [
+                'uri'         => 'kanboard://users',
+                'name'        => 'User List',
+                'description' => 'List of users you can interact with',
+                'mimeType'    => 'application/json',
+            ],
+        ];
+
         return [
             'jsonrpc' => '2.0',
             'id'      => $id,
             'result'  => [
-                'resources' => [
-                    [
-                        'uri'         => 'kanboard://projects',
-                        'name'        => 'Project List',
-                        'description' => 'List of projects visible to you',
-                        'mimeType'    => 'application/json',
-                    ],
-                    [
-                        'uri'         => 'kanboard://users',
-                        'name'        => 'User List',
-                        'description' => 'List of users you can interact with',
-                        'mimeType'    => 'application/json',
-                    ],
-                ],
+                'resources' => $this->exposedDefinitions($resources, McpCatalog::KIND_RESOURCE, 'uri'),
             ],
         ];
     }
@@ -1065,6 +1081,9 @@ class McpServer extends Base
     private function readResource(array $params, int|string|null $id): array
     {
         $uri = $params['uri'] ?? '';
+        if (!is_string($uri) || !$this->isExposed(McpCatalog::KIND_RESOURCE, $uri)) {
+            return $this->errorResponse(-32002, 'Resource not found', $id, ['uri' => $uri]);
+        }
 
         try {
             switch ($uri) {
@@ -1291,6 +1310,78 @@ class McpServer extends Base
     // -----------------------------------------------------------------------
     // Response builders
     // -----------------------------------------------------------------------
+
+    /**
+     * Unknown names and role-hidden tools share one JSON-RPC error.
+     * A role-allowed tool that is switched off is Forbidden, before dispatch.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function rejectHiddenOrDisabledTool(string $name, int|string|null $id): ?array
+    {
+        $definition = McpCatalog::find($name);
+        if ($definition === null
+            || $definition['kind'] !== McpCatalog::KIND_TOOL
+            || !$this->access->allowsCapability($definition['capability'])
+        ) {
+            return $this->errorResponse(-32602, 'Unknown tool: ' . $name, $id);
+        }
+
+        if (!$this->isGatewayEnabled($name)) {
+            return $this->forbiddenResponse($id);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $definitions
+     * @return array<int,array<string,mixed>>
+     */
+    private function exposedDefinitions(array $definitions, string $kind, string $field): array
+    {
+        $visible = [];
+        foreach ($definitions as $definition) {
+            $name = $definition[$field] ?? '';
+            if (is_string($name) && $this->isExposed($kind, $name)) {
+                $visible[] = $definition;
+            }
+        }
+
+        return $visible;
+    }
+
+    /**
+     * Catalog membership, role capability, then the stored gateway bit.
+     * A thrown grant lookup fails closed and must not be treated as on.
+     */
+    private function isExposed(string $kind, string $name): bool
+    {
+        $definition = McpCatalog::find($name);
+        if ($definition === null || $definition['kind'] !== $kind) {
+            return false;
+        }
+
+        if (!$this->access->allowsCapability($definition['capability'])) {
+            return false;
+        }
+
+        return $this->isGatewayEnabled($name);
+    }
+
+    private function isGatewayEnabled(string $name): bool
+    {
+        if ($this->enabledEndpoints === null) {
+            $this->enabledEndpoints = $this->gateway()->enabledMap($this->userId);
+        }
+
+        return $this->enabledEndpoints[$name] ?? false;
+    }
+
+    private function gateway(): McpEndpointGatewayModel
+    {
+        return $this->container['mcpEndpointGatewayModel'];
+    }
 
     private function forbiddenResponse(int|string|null $id): array
     {

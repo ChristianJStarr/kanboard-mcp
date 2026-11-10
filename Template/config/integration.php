@@ -4,45 +4,27 @@
 
     <?php
     // Always show the token of the session user, never the profile user.
-    // The real <form> is rendered from template:layout:bottom. Controls here
-    // only point at it, so they are not submitted with Kanboard's Save button.
+    // The real <form> elements are rendered from template:layout:bottom.
+    // Controls here only point at them, so Kanboard's Save button does not
+    // submit them and saving access does not rotate the token.
     $this->task->memoryCache->set('mcp_integration_forms', true);
     $mcpUserId          = (int) $this->task->userSession->getId();
     $mcpHasToken        = $this->task->mcpTokenModel->hasToken($mcpUserId);
     $mcpToken           = $this->task->mcpTokenModel->takeReveal($mcpUserId);
     $mcpDisableUrlToken = $this->task->mcpTokenModel->urlTokensDisabled();
+    $mcpRotationEnabled = $this->task->mcpTokenModel->rotationEnabled();
+    $mcpRotationDays    = $this->task->mcpTokenModel->rotationDays();
+    $mcpExpiresAt       = $this->task->mcpTokenModel->expiresAtForUser($mcpUserId);
     $mcpIsAdmin         = $this->task->userSession->isAdmin();
     $baseUrl            = $this->helper->url->base();
     $mcpUrl             = $baseUrl
         . '?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol';
+    $mcpGatewayRows = $this->task->mcpEndpointGatewayModel->rowsForUser($mcpUserId);
+    $mcpGroups = [];
+    foreach ($mcpGatewayRows as $mcpRow) {
+        $mcpGroups[$mcpRow['group']][] = $mcpRow;
+    }
     ?>
-
-    <div class="form-group" id="mcp-url-token-setting">
-        <input type="hidden"
-               name="mcp_disable_url_token_present"
-               value="1"
-               form="mcp-url-token-form">
-        <label>
-            <input type="checkbox"
-                   name="mcp_disable_url_token"
-                   form="mcp-url-token-form"
-                   value="1"
-                   id="mcp-disable-url-token"
-                   <?= $mcpDisableUrlToken ? 'checked="checked"' : '' ?>
-                   <?= $mcpIsAdmin ? '' : 'disabled="disabled"' ?>>
-            <?= t('Disable token in URL (query string)') ?>
-        </label>
-        <p class="form-help"><?= t('When this is checked, MCP clients must send the token in the Authorization header. A token in the URL can be written to web server and proxy access logs.') ?></p>
-        <?php if (!$mcpIsAdmin): ?>
-            <p class="form-help"><?= t('Only administrators can change this instance setting.') ?></p>
-        <?php endif; ?>
-    </div>
-
-    <?php if ($mcpIsAdmin): ?>
-        <button type="submit" form="mcp-url-token-form" class="btn btn-default" id="mcp-save-url-token-setting">
-            <?= t('Save URL token setting') ?>
-        </button>
-    <?php endif; ?>
 
     <?php if ($mcpToken): ?>
 
@@ -117,9 +99,103 @@
             <p><?= t('No MCP token has been generated yet. Generate a token to enable MCP access.') ?></p>
         </div>
 
-        <button type="submit" form="mcp-token-form" class="btn btn-success">
+        <button type="submit" form="mcp-token-form" class="btn btn-blue">
             <i class="fa fa-key fa-fw"></i>&nbsp;<?= t('Generate Token') ?>
         </button>
 
     <?php endif; ?>
+
+    <fieldset id="mcp-instance-settings">
+        <legend><?= t('Instance settings') ?></legend>
+
+        <div id="mcp-url-token-setting">
+            <input type="hidden"
+                   name="mcp_disable_url_token_present"
+                   value="1"
+                   form="mcp-settings-form">
+            <label>
+                <input type="checkbox"
+                       name="mcp_disable_url_token"
+                       form="mcp-settings-form"
+                       value="1"
+                       id="mcp-disable-url-token"
+                       <?= $mcpDisableUrlToken ? 'checked="checked"' : '' ?>
+                       <?= $mcpIsAdmin ? '' : 'disabled="disabled"' ?>>
+                <?= t('Disable token in URL (query string)') ?>
+            </label>
+            <p class="form-help"><?= t('Tokens in the URL are written to access logs.') ?></p>
+        </div>
+
+        <div id="mcp-rotation-setting">
+            <label>
+                <input type="checkbox"
+                       name="mcp_token_rotation_enabled"
+                       form="mcp-settings-form"
+                       value="1"
+                       id="mcp-token-rotation-enabled"
+                       <?= $mcpRotationEnabled ? 'checked="checked"' : '' ?>
+                       <?= $mcpIsAdmin ? '' : 'disabled="disabled"' ?>>
+                <?= t('Enable MCP token rotation') ?>
+            </label>
+
+            <label for="mcp-token-rotation-days"><?= t('Expires after') ?></label>
+            <select name="mcp_token_rotation_days"
+                    id="mcp-token-rotation-days"
+                    form="mcp-settings-form"
+                    <?= $mcpIsAdmin ? '' : 'disabled="disabled"' ?>>
+                <?php foreach ([30, 60, 90, 180, 360] as $mcpRotationOption): ?>
+                    <option value="<?= $mcpRotationOption ?>" <?= $mcpRotationDays === $mcpRotationOption ? 'selected="selected"' : '' ?>>
+                        <?= t($mcpRotationOption . ' days') ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <p class="form-help"><?= t('A notice appears in My notifications 14 days before expiry.') ?></p>
+            <?php if ($mcpExpiresAt !== null): ?>
+                <p id="mcp-token-expiry">
+                    <?php if ($mcpExpiresAt <= time()): ?>
+                        <?= t('This token expired on %s. Generate a new one.', date('Y-m-d', $mcpExpiresAt)) ?>
+                    <?php else: ?>
+                        <?= t('This token expires on %s.', date('Y-m-d', $mcpExpiresAt)) ?>
+                    <?php endif; ?>
+                </p>
+            <?php endif; ?>
+        </div>
+
+        <?php if ($mcpIsAdmin): ?>
+            <div class="form-actions">
+                <button type="submit" form="mcp-settings-form" class="btn btn-blue" id="mcp-save-instance-settings">
+                    <?= t('Save') ?>
+                </button>
+            </div>
+        <?php else: ?>
+            <p class="form-help"><?= t('Only administrators can change this instance setting.') ?></p>
+        <?php endif; ?>
+    </fieldset>
+</div>
+
+<div class="panel" id="mcp-access-panel">
+    <h3><?= t('MCP access') ?></h3>
+    <p><?= t('Enable or disable each MCP endpoint for your own token. Only endpoints your role allows are shown. A disabled endpoint cannot be called.') ?></p>
+
+    <?php foreach ($mcpGroups as $mcpGroup => $mcpGroupRows): ?>
+        <h4><?= $this->text->e(t($mcpGroup)) ?></h4>
+        <?php foreach ($mcpGroupRows as $mcpEndpoint): ?>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox"
+                           name="endpoints[]"
+                           form="mcp-gateway-form"
+                           value="<?= $this->text->e($mcpEndpoint['name']) ?>"
+                           <?= $mcpEndpoint['enabled'] ? 'checked="checked"' : '' ?>>
+                    <code><?= $this->text->e($mcpEndpoint['name']) ?></code>
+                </label>
+            </div>
+        <?php endforeach ?>
+    <?php endforeach ?>
+
+    <div class="form-actions">
+        <button type="submit" form="mcp-gateway-form" class="btn btn-blue">
+            <?= t('Save access') ?>
+        </button>
+    </div>
 </div>

@@ -163,7 +163,7 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         $this->assertIsString($forms);
 
         $this->assertMatchesRegularExpression(
-            '/<input type="hidden"\s+name="mcp_disable_url_token_present"\s+value="1"\s+form="mcp-url-token-form">/',
+            '/<input type="hidden"\s+name="mcp_disable_url_token_present"\s+value="1"\s+form="mcp-settings-form">/',
             $panel
         );
         $this->assertDoesNotMatchRegularExpression(
@@ -173,17 +173,14 @@ class SaveUrlTokenSettingControllerTest extends McpTestCase
         $this->assertStringContainsString('id="mcp-disable-url-token"', $panel);
         $this->assertStringNotContainsString('onchange=', $panel);
         $this->assertStringContainsString('disabled="disabled"', $panel);
+        $this->assertStringContainsString('id="mcp-save-instance-settings"', $panel);
+        $this->assertStringContainsString('form="mcp-settings-form"', $panel);
         $plugin = file_get_contents(dirname(__DIR__) . '/Plugin.php');
-        $script = file_get_contents(dirname(__DIR__) . '/Assets/js/url-token-setting.js');
         $this->assertIsString($plugin);
-        $this->assertIsString($script);
-        $this->assertStringContainsString('plugins/ModelContextProtocol/Assets/js/url-token-setting.js', $plugin);
-        $this->assertStringContainsString("getElementById('mcp-disable-url-token')", $script);
-        $this->assertStringContainsString("getElementById('mcp-url-token-form')", $script);
-        $this->assertStringContainsString('requestSubmit', $script);
-        $this->assertStringContainsString('id="mcp-save-url-token-setting"', $panel);
+        $this->assertStringNotContainsString('url-token-setting.js', $plugin);
+        $this->assertStringContainsString('fieldset id="mcp-instance-settings"', $panel);
         $this->assertStringNotContainsString('name="mcp_disable_url_token"', $forms);
-        $this->assertStringContainsString('id="mcp-url-token-form"', $forms);
+        $this->assertStringContainsString('id="mcp-settings-form"', $forms);
     }
 
     private function assertStoredUrlTokenSetting(string $expected): void

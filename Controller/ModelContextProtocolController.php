@@ -5,7 +5,10 @@ namespace Kanboard\Plugin\ModelContextProtocol\Controller;
 
 use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
+use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -57,6 +60,10 @@ class ModelContextProtocolController extends BaseController
 
         $userId = $this->authenticateToken();
         if ($userId === null) {
+            if ($this->mcpTokenModel->authenticationExpired()) {
+                header('WWW-Authenticate: Bearer error="invalid_token", error_description="The MCP token has expired"');
+                $this->sendError(401, t('The MCP token has expired'));
+            }
             $this->sendError(401, 'Unauthorized');
             return;
         }
@@ -139,6 +146,87 @@ class ModelContextProtocolController extends BaseController
     }
 
     /**
+     * Save the instance-wide MCP token rotation period.
+     *
+     * Admins only. Days must be one of 30, 60, 90, 180, or 360.
+     */
+    public function saveTokenRotation(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        if (!$this->userSession->isAdmin()) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = $this->userSession->getId();
+        $target = $this->request->getRawValue('target');
+        $target = is_string($target) ? $target : '';
+        $enabled = $this->postedFlagOn($this->request->getRawValue('mcp_token_rotation_enabled'));
+        $days = $this->request->getRawValue('mcp_token_rotation_days');
+        $dayCount = is_string($days) ? (int) $days : 0;
+
+        if (!in_array($dayCount, McpTokenModel::ROTATION_DAY_OPTIONS, true)) {
+            $this->flash->failure(t('Choose 30, 60, 90, 180, or 360 days'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $this->mcpTokenModel->saveRotation($enabled, $dayCount);
+        $this->flash->success(t('MCP token rotation saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
+     * Save the URL-token policy and the rotation period together.
+     *
+     * Admins only. A period outside 30, 60, 90, 180, or 360 changes nothing.
+     */
+    public function saveInstanceSettings(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        if (!$this->userSession->isAdmin()) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = $this->userSession->getId();
+        $target = $this->request->getRawValue('target');
+        $target = is_string($target) ? $target : '';
+        $days = $this->request->getRawValue('mcp_token_rotation_days');
+        $dayCount = is_string($days) ? (int) $days : 0;
+
+        if (!in_array($dayCount, McpTokenModel::ROTATION_DAY_OPTIONS, true)) {
+            $this->flash->failure(t('Choose 30, 60, 90, 180, or 360 days'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        // The settings form always posts this flag. A request that omits it
+        // must not turn URL tokens back on.
+        if ($this->postedFlagOn($this->request->getRawValue('mcp_disable_url_token_present'))) {
+            $this->mcpTokenModel->setUrlTokensDisabled(
+                $this->postedUrlTokensDisabled($this->request->getRawValue('mcp_disable_url_token'))
+            );
+        }
+        $this->mcpTokenModel->saveRotation(
+            $this->postedFlagOn($this->request->getRawValue('mcp_token_rotation_enabled')),
+            $dayCount
+        );
+        $this->flash->success(t('MCP settings saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
      * Redirect through the integrations whitelist. A posted URL is never used.
      *
      * Kanboard 1.2.45 UrlHelper::build() appends every parameter when
@@ -188,6 +276,133 @@ class ModelContextProtocolController extends BaseController
         }
 
         return is_string($posted) && $posted === '1';
+    }
+
+    /**
+     * True when a checkbox posted "1", including a duplicate-name list.
+     *
+     * @param mixed $posted
+     */
+    private function postedFlagOn($posted): bool
+    {
+        if (is_array($posted)) {
+            foreach ($posted as $value) {
+                if ($this->postedFlagOn($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return is_string($posted) && $posted === '1';
+    }
+
+    /**
+     * Save the session user's endpoint toggles.
+     *
+     * A hidden gateway_save flag is required. The posted list is validated
+     * before any write. user_id never selects another account.
+     */
+    public function saveGateway(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        $userId = (int) $this->userSession->getId();
+        $form = $this->request->getRawFormValues();
+        $this->rejectForeignUserId($userId, $form);
+
+        $target = isset($form['target']) && is_string($form['target']) ? $form['target'] : '';
+
+        if (!isset($form['gateway_save']) || !is_string($form['gateway_save']) || $form['gateway_save'] !== '1') {
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $posted = [];
+        if (array_key_exists('endpoints', $form)) {
+            $posted = $this->flatStringList($form['endpoints']);
+            if ($posted === null) {
+                $this->flash->failure(t('Could not save MCP access'));
+                $this->redirectToIntegrations($target, $userId);
+                return;
+            }
+        }
+
+        $allowed = $this->mcpEndpointGatewayModel->allowedNames(new McpAccess($this->container, $userId));
+
+        try {
+            $this->mcpEndpointGatewayModel->save($userId, $allowed, $posted);
+        } catch (Throwable $exception) {
+            if (!$exception instanceof InvalidArgumentException) {
+                $this->logger->error('MCP access save failed', ['exception' => $exception]);
+            }
+            $this->flash->failure(t('Could not save MCP access'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $this->flash->success(t('MCP access saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
+     * Query-string and raw POST user_id must be absent or this session user.
+     *
+     * @param array<string,mixed> $form
+     */
+    private function rejectForeignUserId(int $userId, array $form): void
+    {
+        if (array_key_exists('user_id', $form) && !$this->isSameUserId($form['user_id'], $userId)) {
+            throw new AccessForbiddenException();
+        }
+
+        if (array_key_exists('user_id', $_GET) && !$this->isSameUserId($_GET['user_id'], $userId)) {
+            throw new AccessForbiddenException();
+        }
+    }
+
+    private function isSameUserId(mixed $value, int $userId): bool
+    {
+        if (is_int($value)) {
+            return $value === $userId;
+        }
+
+        if (is_string($value)) {
+            return $value === (string) $userId;
+        }
+
+        return false;
+    }
+
+    /**
+     * A JSON/form list of strings, or null when the shape is not that list.
+     *
+     * @param mixed $value
+     * @return string[]|null
+     */
+    private function flatStringList(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+
+        $names = [];
+        $expected = 0;
+        foreach ($value as $key => $item) {
+            if ($key !== $expected || !is_string($item)) {
+                return null;
+            }
+            $names[] = $item;
+            $expected++;
+        }
+
+        return $names;
     }
 
     // -----------------------------------------------------------------------

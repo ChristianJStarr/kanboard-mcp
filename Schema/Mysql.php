@@ -2,7 +2,9 @@
 
 namespace Kanboard\Plugin\ModelContextProtocol\Schema;
 
-const VERSION = 3;
+require_once __DIR__ . '/../Core/McpCatalog.php';
+
+const VERSION = 6;
 
 function version_1($pdo)
 {
@@ -51,6 +53,79 @@ function version_3($pdo)
     }
 
     $pdo->exec('ALTER TABLE mcp_tokens DROP COLUMN token_plain');
+}
+
+function version_4($pdo)
+{
+    version_3($pdo);
+
+    // A grants table from an earlier build already holds the backfill. A second
+    // run would turn writes on for tokens created after that build.
+    if (mcp_mysql_table_exists($pdo, 'mcp_endpoint_grants')) {
+        return;
+    }
+
+    // MySQL commits CREATE TABLE immediately. The backfill fills a staging
+    // table that is renamed last, so a failed backfill runs again next boot.
+    $pdo->exec('DROP TABLE IF EXISTS mcp_endpoint_grants_v4');
+    $pdo->exec('
+        CREATE TABLE mcp_endpoint_grants_v4 (
+            user_id  INT         NOT NULL,
+            endpoint VARCHAR(64) NOT NULL,
+            enabled  TINYINT     NOT NULL,
+            PRIMARY KEY (user_id, endpoint),
+            KEY idx_mcp_endpoint_grants_user (user_id)
+        ) ENGINE=InnoDB CHARSET=utf8
+    ');
+
+    $insert = $pdo->prepare(
+        'INSERT IGNORE INTO mcp_endpoint_grants_v4 (user_id, endpoint, enabled) VALUES (:user_id, :endpoint, 1)'
+    );
+    mcp_backfill_write_grants($pdo, $insert);
+
+    $pdo->exec('RENAME TABLE mcp_endpoint_grants_v4 TO mcp_endpoint_grants');
+}
+
+function version_5($pdo)
+{
+    if (!mcp_mysql_table_exists($pdo, 'mcp_tokens')) {
+        mcp_mysql_create_tokens($pdo);
+    }
+    if (!mcp_mysql_column_exists($pdo, 'mcp_tokens', 'expires_at')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN expires_at INT NULL');
+    }
+    if (!mcp_mysql_column_exists($pdo, 'mcp_tokens', 'rotation_notified_on')) {
+        $pdo->exec('ALTER TABLE mcp_tokens ADD COLUMN rotation_notified_on INT NULL');
+    }
+}
+
+function version_6($pdo)
+{
+    version_5($pdo);
+}
+
+/**
+ * Enable every write-class catalog endpoint for users who already have a token.
+ * Names come from the catalog constant. user_id and endpoint are bound parameters.
+ */
+function mcp_backfill_write_grants($pdo, $insert)
+{
+    $users = $pdo->query('SELECT user_id FROM mcp_tokens');
+    if ($users === false) {
+        return;
+    }
+
+    foreach ($users->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+        foreach (\Kanboard\Plugin\ModelContextProtocol\Core\McpCatalog::ENDPOINTS as $endpoint) {
+            if ($endpoint['defaultEnabled'] === true) {
+                continue;
+            }
+            $insert->execute([
+                ':user_id' => (int) $row['user_id'],
+                ':endpoint' => $endpoint['name'],
+            ]);
+        }
+    }
 }
 
 function mcp_mysql_create_tokens($pdo)
