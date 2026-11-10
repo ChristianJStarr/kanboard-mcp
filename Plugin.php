@@ -35,9 +35,14 @@ class Plugin extends Base
             'ModelContextProtocol:config/forms'
         );
 
-        $this->hook->on('template:layout:js', [
-            'template' => 'plugins/ModelContextProtocol/Assets/js/url-token-setting.js',
-        ]);
+        $this->template->setTemplateOverride(
+            'web_notification/show',
+            'ModelContextProtocol:web_notification/show'
+        );
+        $this->template->hook->attach(
+            'template:layout:top',
+            'ModelContextProtocol:config/rotation_notice'
+        );
 
         // handle: public endpoint – no session required, token-authenticated
         $this->applicationAccessMap->add(
@@ -57,6 +62,16 @@ class Plugin extends Base
         $this->applicationAccessMap->add(
             'ModelContextProtocolController',
             'saveUrlTokenSetting',
+            Role::APP_ADMIN
+        );
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveTokenRotation',
+            Role::APP_ADMIN
+        );
+        $this->applicationAccessMap->add(
+            'ModelContextProtocolController',
+            'saveInstanceSettings',
             Role::APP_ADMIN
         );
 

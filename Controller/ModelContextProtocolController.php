@@ -7,6 +7,7 @@ use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpAccess;
 use Kanboard\Plugin\ModelContextProtocol\Core\McpServer;
+use Kanboard\Plugin\ModelContextProtocol\Model\McpTokenModel;
 use InvalidArgumentException;
 use Throwable;
 
@@ -59,6 +60,10 @@ class ModelContextProtocolController extends BaseController
 
         $userId = $this->authenticateToken();
         if ($userId === null) {
+            if ($this->mcpTokenModel->authenticationExpired()) {
+                header('WWW-Authenticate: Bearer error="invalid_token", error_description="The MCP token has expired"');
+                $this->sendError(401, t('The MCP token has expired'));
+            }
             $this->sendError(401, 'Unauthorized');
             return;
         }
@@ -141,6 +146,87 @@ class ModelContextProtocolController extends BaseController
     }
 
     /**
+     * Save the instance-wide MCP token rotation period.
+     *
+     * Admins only. Days must be one of 30, 60, 90, 180, or 360.
+     */
+    public function saveTokenRotation(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        if (!$this->userSession->isAdmin()) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = $this->userSession->getId();
+        $target = $this->request->getRawValue('target');
+        $target = is_string($target) ? $target : '';
+        $enabled = $this->postedFlagOn($this->request->getRawValue('mcp_token_rotation_enabled'));
+        $days = $this->request->getRawValue('mcp_token_rotation_days');
+        $dayCount = is_string($days) ? (int) $days : 0;
+
+        if (!in_array($dayCount, McpTokenModel::ROTATION_DAY_OPTIONS, true)) {
+            $this->flash->failure(t('Choose 30, 60, 90, 180, or 360 days'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        $this->mcpTokenModel->saveRotation($enabled, $dayCount);
+        $this->flash->success(t('MCP token rotation saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
+     * Save the URL-token policy and the rotation period together.
+     *
+     * Admins only. A period outside 30, 60, 90, 180, or 360 changes nothing.
+     */
+    public function saveInstanceSettings(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->status(405);
+            return;
+        }
+
+        $this->checkReusableCSRFParam();
+
+        if (!$this->userSession->isAdmin()) {
+            throw new AccessForbiddenException();
+        }
+
+        $userId = $this->userSession->getId();
+        $target = $this->request->getRawValue('target');
+        $target = is_string($target) ? $target : '';
+        $days = $this->request->getRawValue('mcp_token_rotation_days');
+        $dayCount = is_string($days) ? (int) $days : 0;
+
+        if (!in_array($dayCount, McpTokenModel::ROTATION_DAY_OPTIONS, true)) {
+            $this->flash->failure(t('Choose 30, 60, 90, 180, or 360 days'));
+            $this->redirectToIntegrations($target, $userId);
+            return;
+        }
+
+        // The settings form always posts this flag. A request that omits it
+        // must not turn URL tokens back on.
+        if ($this->postedFlagOn($this->request->getRawValue('mcp_disable_url_token_present'))) {
+            $this->mcpTokenModel->setUrlTokensDisabled(
+                $this->postedUrlTokensDisabled($this->request->getRawValue('mcp_disable_url_token'))
+            );
+        }
+        $this->mcpTokenModel->saveRotation(
+            $this->postedFlagOn($this->request->getRawValue('mcp_token_rotation_enabled')),
+            $dayCount
+        );
+        $this->flash->success(t('MCP settings saved'));
+        $this->redirectToIntegrations($target, $userId);
+    }
+
+    /**
      * Redirect through the integrations whitelist. A posted URL is never used.
      *
      * Kanboard 1.2.45 UrlHelper::build() appends every parameter when
@@ -182,6 +268,26 @@ class ModelContextProtocolController extends BaseController
         if (is_array($posted)) {
             foreach ($posted as $value) {
                 if ($this->postedUrlTokensDisabled($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return is_string($posted) && $posted === '1';
+    }
+
+    /**
+     * True when a checkbox posted "1", including a duplicate-name list.
+     *
+     * @param mixed $posted
+     */
+    private function postedFlagOn($posted): bool
+    {
+        if (is_array($posted)) {
+            foreach ($posted as $value) {
+                if ($this->postedFlagOn($value)) {
                     return true;
                 }
             }
